@@ -1,5 +1,0 @@
-wandb
-numpy
-torch
-torchvision
-tqdm

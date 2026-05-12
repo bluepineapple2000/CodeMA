@@ -15,7 +15,7 @@ from tqdm import tqdm
 from PIL import Image
 import numpy as np
 
-import wandb
+from torch.utils.tensorboard import SummaryWriter
 from unet_model import UNet
 
 dir_img = Path('./data/imgs/')
@@ -126,6 +126,12 @@ def crossroad_l1_loss(mask1_pred, mask2_pred, gt_mask1, gt_mask2, combined_input
     Returns:
         Total loss
     """
+    # Resize predictions to match ground truth shape if needed
+    if mask1_pred.shape != gt_mask1.shape:
+        mask1_pred = F.interpolate(mask1_pred, size=gt_mask1.shape[2:], mode='bilinear', align_corners=False)
+    if mask2_pred.shape != gt_mask2.shape:
+        mask2_pred = F.interpolate(mask2_pred, size=gt_mask2.shape[2:], mode='bilinear', align_corners=False)
+    
     # Direct reconstruction losses
     loss_mask1 = F.l1_loss(mask1_pred, gt_mask1)
     loss_mask2 = F.l1_loss(mask2_pred, gt_mask2)
@@ -143,6 +149,57 @@ def crossroad_l1_loss(mask1_pred, mask2_pred, gt_mask1, gt_mask2, combined_input
     return total_loss
 
 
+def evaluate(model, dataloader, device, amp):
+    """
+    Evaluate the model on validation set and return average Dice score.
+    """
+    model.eval()
+    dice_scores = []
+    
+    with torch.no_grad():
+        for batch in dataloader:
+            images = batch['image'].to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+            
+            with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
+                masks_pred = model(images)
+                
+                # Get ground truth masks
+                gt_mask1 = batch['gt_mask1'].to(device=device, dtype=torch.float32)
+                gt_mask2 = batch['gt_mask2'].to(device=device, dtype=torch.float32)
+                
+                # Split predictions into two masks
+                mask1_pred = masks_pred[:, 0:1, :, :]
+                mask2_pred = masks_pred[:, 1:2, :, :]
+                
+                # Apply sigmoid to get values in [0, 1]
+                mask1_pred = torch.sigmoid(mask1_pred)
+                mask2_pred = torch.sigmoid(mask2_pred)
+                
+                # Resize predictions to match ground truth if needed
+                if mask1_pred.shape != gt_mask1.shape:
+                    mask1_pred = F.interpolate(mask1_pred, size=gt_mask1.shape[2:], mode='bilinear', align_corners=False)
+                if mask2_pred.shape != gt_mask2.shape:
+                    mask2_pred = F.interpolate(mask2_pred, size=gt_mask2.shape[2:], mode='bilinear', align_corners=False)
+                
+                # Calculate Dice score for both masks
+                dice1 = dice_coeff(mask1_pred, gt_mask1)
+                dice2 = dice_coeff(mask2_pred, gt_mask2)
+                dice_scores.append((dice1 + dice2) / 2.0)
+    
+    model.train()
+    return torch.stack(dice_scores).mean().item()
+
+
+def dice_coeff(input, target, smooth=1e-6):
+    """
+    Calculate Dice coefficient between input and target tensors.
+    """
+    intersection = (input * target).sum()
+    union = input.sum() + target.sum()
+    dice = (2 * intersection + smooth) / (union + smooth)
+    return dice
+
+
 def train_model(
         model,
         device,
@@ -156,17 +213,14 @@ def train_model(
         weight_decay: float = 1e-8,
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
-        use_combined_dataset: bool = False,
         lambda_crossroad: float = 1.0,
+        use_combined_dataset: bool = True,
 ):
-    # 1. Create dataset
+
     if use_combined_dataset:
         dataset = CombinedImageDataset(dir_combined, dir_ground_truth, img_scale)
     else:
-        try:
-            dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
-        except (AssertionError, RuntimeError, IndexError):
-            dataset = BasicDataset(dir_img, dir_mask, img_scale)
+        raise ValueError("Non-combined dataset mode is not implemented. Please use --combined flag.")
 
     # 2. Split into train / validation partitions
     n_val = int(len(dataset) * val_percent)
@@ -174,15 +228,23 @@ def train_model(
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=device.type != 'cpu')
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net', resume='allow', anonymous='must')
-    experiment.config.update(
-        dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
-             val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
+    writer = SummaryWriter()
+    writer.add_hparams(
+        {
+            'epochs': epochs,
+            'batch_size': batch_size,
+            'learning_rate': learning_rate,
+            'val_percent': val_percent,
+            'save_checkpoint': save_checkpoint,
+            'img_scale': img_scale,
+            'amp': amp
+        },
+        {'hparam/metric': 0}
     )
 
     logging.info(f'''Starting training:
@@ -201,7 +263,7 @@ def train_model(
     optimizer = optim.RMSprop(model.parameters(),
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
-    grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
+    grad_scaler = torch.amp.GradScaler(device.type, enabled=amp)
     criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
     global_step = 0
 
@@ -264,60 +326,43 @@ def train_model(
                 pbar.update(images.shape[0])
                 global_step += 1
                 epoch_loss += loss.item()
-                experiment.log({
-                    'train loss': loss.item(),
-                    'step': global_step,
-                    'epoch': epoch
-                })
+                writer.add_scalar('train_loss', loss.item(), global_step)
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
                 if division_step > 0:
                     if global_step % division_step == 0:
-                        histograms = {}
                         for tag, value in model.named_parameters():
                             tag = tag.replace('/', '.')
                             if not (torch.isinf(value) | torch.isnan(value)).any():
-                                histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
+                                writer.add_histogram(f'Weights/{tag}', value.data, global_step)
                             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
-                                histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
+                                writer.add_histogram(f'Gradients/{tag}', value.grad.data, global_step)
 
                         val_score = evaluate(model, val_loader, device, amp)
                         scheduler.step(val_score)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
                         try:
-                            log_dict = {
-                                'learning rate': optimizer.param_groups[0]['lr'],
-                                'validation Dice': val_score,
-                                'images': wandb.Image(images[0].cpu()),
-                                'step': global_step,
-                                'epoch': epoch,
-                                **histograms
-                            }
+                            writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
+                            writer.add_scalar('validation_Dice', val_score, global_step)
+                            writer.add_image('input_images', images[0], global_step)
                             
                             if use_combined_dataset:
                                 # Log predicted masks for combined dataset
-                                log_dict['masks'] = {
-                                    'pred_mask1': wandb.Image(torch.sigmoid(masks_pred[0, 0:1, :, :]).float().cpu()),
-                                    'pred_mask2': wandb.Image(torch.sigmoid(masks_pred[0, 1:2, :, :]).float().cpu()),
-                                }
+                                writer.add_image('masks/pred_mask1', torch.sigmoid(masks_pred[0, 0:1, :, :]).float(), global_step)
+                                writer.add_image('masks/pred_mask2', torch.sigmoid(masks_pred[0, 1:2, :, :]).float(), global_step)
                             else:
                                 # Original logging for standard dataset
-                                log_dict['masks'] = {
-                                    'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
-                                }
-                            
-                            experiment.log(log_dict)
+                                writer.add_image('masks/true', true_masks[0].float().unsqueeze(0), global_step)
+                                writer.add_image('masks/pred', masks_pred.argmax(dim=1)[0].float().unsqueeze(0), global_step)
                         except:
                             pass
 
         if save_checkpoint:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
-            state_dict['mask_values'] = dataset.mask_values
             torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
             logging.info(f'Checkpoint {epoch} saved!')
 
