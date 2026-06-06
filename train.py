@@ -11,7 +11,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch import optim
 from torch.utils.data import DataLoader, Dataset, random_split
@@ -27,37 +26,41 @@ dir_runs = Path("./runs/")
 dir_previews = Path("./prediction_previews/")
 
 
-class H5SpotSegmentationDataset(Dataset):
-    """Binary spot segmentation samples stored as HDF5 groups with image/mask datasets."""
+class H5SpotSeparationDataset(Dataset):
+    """Spot separation samples stored as HDF5 groups with image/spot_images datasets."""
 
     def __init__(self, h5_file: Path, img_scale: float = 1.0):
         self.h5_file = Path(h5_file)
         self.img_scale = img_scale
 
         if not self.h5_file.exists():
-            raise FileNotFoundError(f"HDF5 segmentation file not found: {self.h5_file}")
+            raise FileNotFoundError(f"HDF5 spot separation file not found: {self.h5_file}")
 
         with h5py.File(self.h5_file, "r") as f:
             self.sample_names = sorted(
                 name
                 for name, obj in f.items()
-                if isinstance(obj, h5py.Group) and "image" in obj and "mask" in obj
+                if isinstance(obj, h5py.Group) and "image" in obj and "spot_images" in obj
             )
 
         if not self.sample_names:
-            raise ValueError(f"No image/mask sample groups found in {self.h5_file}")
+            raise ValueError(
+                f"No image/spot_images sample groups found in {self.h5_file}. "
+                "Regenerate the augmentation archive with separated spot intensity targets."
+            )
 
-        logging.info("Found %d HDF5 spot segmentation samples", len(self.sample_names))
+        logging.info("Found %d HDF5 spot separation samples", len(self.sample_names))
 
     def __len__(self):
         return len(self.sample_names)
 
     @staticmethod
-    def normalize_image(image: np.ndarray) -> np.ndarray:
+    def normalize_image_and_targets(image: np.ndarray, targets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         image = image.astype(np.float32, copy=False)
+        targets = targets.astype(np.float32, copy=False)
         finite = np.isfinite(image)
         if not finite.any():
-            return np.zeros_like(image, dtype=np.float32)
+            return np.zeros_like(image, dtype=np.float32), np.zeros_like(targets, dtype=np.float32)
 
         values = image[finite]
         lo, hi = np.percentile(values, [1, 99.8])
@@ -65,27 +68,32 @@ class H5SpotSegmentationDataset(Dataset):
             lo = float(values.min())
             hi = float(values.max())
         if hi <= lo:
-            return np.zeros_like(image, dtype=np.float32)
+            return np.zeros_like(image, dtype=np.float32), np.zeros_like(targets, dtype=np.float32)
 
         image = np.clip(image, lo, hi)
         image = (image - lo) / (hi - lo)
         image[~finite] = 0.0
-        return image.astype(np.float32, copy=False)
+
+        targets = np.clip(targets, lo, hi)
+        targets = (targets - lo) / (hi - lo)
+        targets[~np.isfinite(targets)] = 0.0
+        return image.astype(np.float32, copy=False), targets.astype(np.float32, copy=False)
 
     def __getitem__(self, idx):
         sample_name = self.sample_names[idx]
 
         with h5py.File(self.h5_file, "r") as f:
             image = f[sample_name]["image"][()]
-            mask = f[sample_name]["mask"][()]
+            targets = f[sample_name]["spot_images"][()]
 
         if image.ndim == 3:
             image = image.mean(axis=-1)
-        if mask.ndim == 3:
-            mask = mask.squeeze()
+        if targets.ndim != 3 or targets.shape[0] != 2:
+            raise ValueError(f"{sample_name}: expected spot_images shape (2, H, W), got {targets.shape}")
 
-        image_tensor = torch.from_numpy(self.normalize_image(image)).unsqueeze(0)
-        mask_tensor = torch.from_numpy((mask > 0).astype(np.float32)).unsqueeze(0)
+        image, targets = self.normalize_image_and_targets(image, targets)
+        image_tensor = torch.from_numpy(image).unsqueeze(0)
+        target_tensor = torch.from_numpy(targets)
 
         if self.img_scale != 1.0:
             size = (
@@ -95,44 +103,54 @@ class H5SpotSegmentationDataset(Dataset):
             image_tensor = F.interpolate(
                 image_tensor.unsqueeze(0), size=size, mode="bilinear", align_corners=False
             ).squeeze(0)
-            mask_tensor = F.interpolate(
-                mask_tensor.unsqueeze(0), size=size, mode="nearest"
+            target_tensor = F.interpolate(
+                target_tensor.unsqueeze(0), size=size, mode="bilinear", align_corners=False
             ).squeeze(0)
 
-        return {"image": image_tensor, "mask": mask_tensor}
+        return {"image": image_tensor, "target": target_tensor}
 
 
-def dice_coeff(input_tensor, target_tensor, smooth=1e-6):
-    intersection = (input_tensor * target_tensor).sum()
-    union = input_tensor.sum() + target_tensor.sum()
-    return (2 * intersection + smooth) / (union + smooth)
+def spot_intensity_prediction(logits: torch.Tensor) -> torch.Tensor:
+    return F.softplus(logits)
 
 
-def dice_loss(input_tensor, target_tensor):
-    return 1.0 - dice_coeff(input_tensor, target_tensor)
+def permutation_invariant_l1_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    direct = F.l1_loss(prediction, target, reduction="none").mean(dim=(1, 2, 3))
+    swapped = F.l1_loss(prediction, target.flip(1), reduction="none").mean(dim=(1, 2, 3))
+    return torch.minimum(direct, swapped).mean()
+
+
+def align_prediction_channels(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    direct = F.l1_loss(prediction, target, reduction="none").mean(dim=(1, 2, 3))
+    swapped = F.l1_loss(prediction, target.flip(1), reduction="none").mean(dim=(1, 2, 3))
+    use_swapped = swapped < direct
+    aligned = prediction.clone()
+    aligned[use_swapped] = prediction[use_swapped].flip(1)
+    return aligned
 
 
 def evaluate(model, dataloader, device, amp):
     model.eval()
-    dice_scores = []
+    losses = []
 
     with torch.no_grad():
         for batch in dataloader:
             images = batch["image"].to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-            true_masks = batch["mask"].to(device=device, dtype=torch.float32)
+            targets = batch["target"].to(device=device, dtype=torch.float32)
 
             with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
-                masks_pred = model(images)
-                if masks_pred.shape != true_masks.shape:
-                    masks_pred = F.interpolate(
-                        masks_pred, size=true_masks.shape[2:], mode="bilinear", align_corners=False
+                logits = model(images)
+                if logits.shape != targets.shape:
+                    logits = F.interpolate(
+                        logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                     )
-                dice_scores.append(dice_coeff(torch.sigmoid(masks_pred), true_masks))
+                prediction = spot_intensity_prediction(logits)
+                losses.append(permutation_invariant_l1_loss(prediction, targets))
 
     model.train()
-    if not dice_scores:
+    if not losses:
         return 0.0
-    return torch.stack(dice_scores).mean().item()
+    return torch.stack(losses).mean().item()
 
 
 def save_prediction_previews(
@@ -143,25 +161,25 @@ def save_prediction_previews(
     output_dir: Path,
     epoch: int,
     max_samples: int = 4,
-    threshold: float = 0.5,
 ):
     if max_samples <= 0:
         return
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    epoch_dir = output_dir / f"epoch_{epoch:03d}"
+    epoch_dir.mkdir(parents=True, exist_ok=True)
     model.eval()
     saved = 0
 
     with torch.no_grad():
         for batch in dataloader:
             images = batch["image"].to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-            true_masks = batch["mask"].to(device=device, dtype=torch.float32)
+            targets = batch["target"].to(device=device, dtype=torch.float32)
 
             with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
                 logits = model(images)
-                if logits.shape != true_masks.shape:
-                    logits = F.interpolate(logits, size=true_masks.shape[2:], mode="bilinear", align_corners=False)
-                probabilities = torch.sigmoid(logits)
+                if logits.shape != targets.shape:
+                    logits = F.interpolate(logits, size=targets.shape[2:], mode="bilinear", align_corners=False)
+                predictions = align_prediction_channels(spot_intensity_prediction(logits), targets)
 
             batch_size = images.shape[0]
             for sample_idx in range(batch_size):
@@ -170,28 +188,29 @@ def save_prediction_previews(
                     return
 
                 image = images[sample_idx, 0].detach().cpu().numpy()
-                true_mask = true_masks[sample_idx, 0].detach().cpu().numpy()
-                pred_prob = probabilities[sample_idx, 0].detach().cpu().numpy()
-                pred_mask = pred_prob >= threshold
+                true_spots = targets[sample_idx].detach().cpu().numpy()
+                pred_spots = predictions[sample_idx].detach().cpu().numpy()
+                true_sum = true_spots.sum(axis=0)
+                pred_sum = pred_spots.sum(axis=0)
+                error = np.abs(pred_sum - true_sum)
 
-                overlay = np.stack([image, image, image], axis=-1)
-                overlay = np.clip(overlay, 0.0, 1.0)
-                overlay[..., 0] = np.maximum(overlay[..., 0], pred_mask.astype(np.float32))
-                overlay[..., 1] = np.maximum(overlay[..., 1], true_mask.astype(np.float32))
-
-                fig, axes = plt.subplots(1, 4, figsize=(12, 3), constrained_layout=True)
+                fig, axes = plt.subplots(2, 4, figsize=(12, 6), constrained_layout=True)
                 panels = [
                     (image, "input", "gray", 0.0, 1.0),
-                    (true_mask, "true mask", "gray", 0.0, 1.0),
-                    (pred_prob, "prediction", "magma", 0.0, 1.0),
-                    (overlay, "overlay", None, None, None),
+                    (true_spots[0], "true spot 1", "gray", 0.0, 1.0),
+                    (pred_spots[0], "pred spot 1", "gray", 0.0, 1.0),
+                    (np.abs(pred_spots[0] - true_spots[0]), "error spot 1", "magma", 0.0, 1.0),
+                    (true_sum, "true sum", "gray", 0.0, 1.0),
+                    (true_spots[1], "true spot 2", "gray", 0.0, 1.0),
+                    (pred_spots[1], "pred spot 2", "gray", 0.0, 1.0),
+                    (error, "sum error", "magma", 0.0, 1.0),
                 ]
-                for axis, (data, title, cmap, vmin, vmax) in zip(axes, panels):
+                for axis, (data, title, cmap, vmin, vmax) in zip(axes.flat, panels):
                     axis.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
                     axis.set_title(title)
                     axis.axis("off")
 
-                file_name = output_dir / f"epoch_{epoch:03d}_sample_{saved:02d}.png"
+                file_name = epoch_dir / f"sample_{saved:02d}.png"
                 fig.savefig(file_name, dpi=150)
                 plt.close(fig)
                 saved += 1
@@ -223,9 +242,8 @@ def train_model(
     run_name: str | None = None,
     preview_dir: Path = dir_previews,
     preview_samples: int = 4,
-    preview_threshold: float = 0.5,
 ):
-    dataset = H5SpotSegmentationDataset(h5_file, img_scale)
+    dataset = H5SpotSeparationDataset(h5_file, img_scale)
 
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
@@ -258,7 +276,6 @@ def train_model(
             "h5_file": str(h5_file),
             "run_name": run_name,
             "preview_samples": preview_samples,
-            "preview_threshold": preview_threshold,
         },
         {"hparam/metric": 0},
     )
@@ -295,9 +312,8 @@ def train_model(
         momentum=momentum,
         foreach=True,
     )
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "max", patience=5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=5)
     grad_scaler = torch.amp.GradScaler(device.type, enabled=amp)
-    criterion = nn.BCEWithLogitsLoss()
     global_step = 0
 
     for epoch in range(1, epochs + 1):
@@ -306,7 +322,7 @@ def train_model(
         with tqdm(total=n_train, desc=f"Epoch {epoch}/{epochs}", unit="img") as pbar:
             for batch in train_loader:
                 images = batch["image"]
-                true_masks = batch["mask"].to(device=device, dtype=torch.float32)
+                targets = batch["target"].to(device=device, dtype=torch.float32)
 
                 assert images.shape[1] == model.n_channels, (
                     f"Network has {model.n_channels} input channels, "
@@ -316,13 +332,13 @@ def train_model(
                 images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
 
                 with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
-                    masks_pred = model(images)
-                    if masks_pred.shape != true_masks.shape:
-                        masks_pred = F.interpolate(
-                            masks_pred, size=true_masks.shape[2:], mode="bilinear", align_corners=False
+                    logits = model(images)
+                    if logits.shape != targets.shape:
+                        logits = F.interpolate(
+                            logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                         )
-                    loss = criterion(masks_pred, true_masks)
-                    loss += dice_loss(torch.sigmoid(masks_pred), true_masks)
+                    predictions = spot_intensity_prediction(logits)
+                    loss = permutation_invariant_l1_loss(predictions, targets)
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -349,12 +365,15 @@ def train_model(
                     val_score = evaluate(model, val_loader, device, amp)
                     scheduler.step(val_score)
 
-                    logging.info("Validation Dice score: %s", val_score)
+                    logging.info("Validation separation L1 loss: %s", val_score)
                     writer.add_scalar("Learning_rate", optimizer.param_groups[0]["lr"], global_step)
-                    writer.add_scalar("Dice/validation_step", val_score, global_step)
+                    writer.add_scalar("Loss/validation_step", val_score, global_step)
                     writer.add_image("input_images", images[0], global_step)
-                    writer.add_image("masks/true", true_masks[0].float(), global_step)
-                    writer.add_image("masks/pred", torch.sigmoid(masks_pred[0]).float(), global_step)
+                    writer.add_image("spots/true_1", targets[0, 0:1].float(), global_step)
+                    writer.add_image("spots/true_2", targets[0, 1:2].float(), global_step)
+                    aligned = align_prediction_channels(predictions[:1], targets[:1])
+                    writer.add_image("spots/pred_1", aligned[0, 0:1].float(), global_step)
+                    writer.add_image("spots/pred_2", aligned[0, 1:2].float(), global_step)
 
         mean_epoch_loss = epoch_loss / max(1, len(train_loader))
         val_score = evaluate(model, val_loader, device, amp)
@@ -367,12 +386,11 @@ def train_model(
             run_preview_dir,
             epoch,
             max_samples=preview_samples,
-            threshold=preview_threshold,
         )
         writer.add_scalar("Loss/train_epoch", mean_epoch_loss, epoch)
-        writer.add_scalar("Dice/validation_epoch", val_score, epoch)
+        writer.add_scalar("Loss/validation_epoch", val_score, epoch)
         logging.info("Epoch %d mean training loss: %s", epoch, mean_epoch_loss)
-        logging.info("Epoch %d validation Dice score: %s", epoch, val_score)
+        logging.info("Epoch %d validation separation L1 loss: %s", epoch, val_score)
 
         if save_checkpoint:
             dir_checkpoint.mkdir(parents=True, exist_ok=True)
@@ -383,7 +401,7 @@ def train_model(
 
 
 def get_args():
-    parser = argparse.ArgumentParser(description="Train the UNet on HDF5 spot segmentation data")
+    parser = argparse.ArgumentParser(description="Train the UNet on HDF5 spot separation data")
     parser.add_argument("--epochs", "-e", metavar="E", type=int, default=5, help="Number of epochs")
     parser.add_argument("--batch-size", "-b", dest="batch_size", metavar="B", type=int, default=1, help="Batch size")
     parser.add_argument("--learning-rate", "-l", metavar="LR", type=float, default=1e-5, help="Learning rate", dest="lr")
@@ -404,7 +422,6 @@ def get_args():
     parser.add_argument("--run-name", type=str, default=None, help="Optional TensorBoard run name")
     parser.add_argument("--preview-dir", type=str, default=str(dir_previews), help="Directory for saved prediction PNG previews")
     parser.add_argument("--preview-samples", type=int, default=4, help="Number of validation previews to save per epoch")
-    parser.add_argument("--preview-threshold", type=float, default=0.5, help="Probability threshold used in preview overlays")
     return parser.parse_args()
 
 
@@ -415,7 +432,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info("Using device %s", device)
 
-    model = UNet(n_channels=1, n_classes=1, bilinear=args.bilinear)
+    model = UNet(n_channels=1, n_classes=2, bilinear=args.bilinear)
     model = model.to(memory_format=torch.channels_last)
 
     logging.info(
@@ -448,7 +465,6 @@ if __name__ == "__main__":
             run_name=args.run_name,
             preview_dir=Path(args.preview_dir),
             preview_samples=args.preview_samples,
-            preview_threshold=args.preview_threshold,
         )
     except torch.cuda.OutOfMemoryError:
         logging.error(
@@ -471,5 +487,4 @@ if __name__ == "__main__":
             run_name=args.run_name,
             preview_dir=Path(args.preview_dir),
             preview_samples=args.preview_samples,
-            preview_threshold=args.preview_threshold,
         )
