@@ -63,7 +63,7 @@ class H5SpotSeparationDataset(Dataset):
             return np.zeros_like(image, dtype=np.float32), np.zeros_like(targets, dtype=np.float32)
 
         values = image[finite]
-        lo, hi = np.percentile(values, [1, 99.8])
+        lo, hi = np.percentile(values, [1, 99.9])
         if hi <= lo:
             lo = float(values.min())
             hi = float(values.max())
@@ -114,10 +114,89 @@ def spot_intensity_prediction(logits: torch.Tensor) -> torch.Tensor:
     return F.softplus(logits)
 
 
-def permutation_invariant_l1_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    direct = F.l1_loss(prediction, target, reduction="none").mean(dim=(1, 2, 3))
-    swapped = F.l1_loss(prediction, target.flip(1), reduction="none").mean(dim=(1, 2, 3))
+def weighted_l1_per_sample(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    foreground_weight: float = 8.0,
+    foreground_threshold: float = 1e-4,
+) -> torch.Tensor:
+    """L1 with extra weight on nonzero target pixels, normalized per sample."""
+    error = (prediction - target).abs()
+    foreground = (target > foreground_threshold).to(dtype=error.dtype)
+    weights = 1.0 + foreground_weight * foreground
+    numerator = (error * weights).sum(dim=(1, 2, 3))
+    denominator = weights.sum(dim=(1, 2, 3)).clamp_min(1.0)
+    return numerator / denominator
+
+
+def permutation_invariant_weighted_l1_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    foreground_weight: float = 8.0,
+) -> torch.Tensor:
+    direct = weighted_l1_per_sample(prediction, target, foreground_weight=foreground_weight)
+    swapped = weighted_l1_per_sample(prediction, target.flip(1), foreground_weight=foreground_weight)
     return torch.minimum(direct, swapped).mean()
+
+
+def reconstruction_l1_loss(prediction: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+    return F.l1_loss(prediction.sum(dim=1, keepdim=True), image)
+
+
+def background_l1_loss(
+    prediction: torch.Tensor,
+    image: torch.Tensor,
+    background_threshold: float = 1e-4,
+) -> torch.Tensor:
+    background = image <= background_threshold
+    if not background.any():
+        return prediction.new_tensor(0.0)
+    return prediction.masked_select(background.expand_as(prediction)).abs().mean()
+
+
+def overlap_exclusivity_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    foreground_threshold: float = 1e-4,
+) -> torch.Tensor:
+    target_overlap = (target[:, 0:1] > foreground_threshold) & (target[:, 1:2] > foreground_threshold)
+    disallowed_overlap = ~target_overlap
+    if not disallowed_overlap.any():
+        return prediction.new_tensor(0.0)
+    overlap_intensity = prediction[:, 0:1] * prediction[:, 1:2]
+    return overlap_intensity.masked_select(disallowed_overlap).mean()
+
+
+def separation_loss_components(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    image: torch.Tensor,
+    foreground_weight: float = 8.0,
+) -> dict[str, torch.Tensor]:
+    spot = permutation_invariant_weighted_l1_loss(
+        prediction,
+        target,
+        foreground_weight=foreground_weight,
+    )
+    reconstruction = reconstruction_l1_loss(prediction, image)
+    background = background_l1_loss(prediction, image)
+    overlap = overlap_exclusivity_loss(prediction, target)
+    total = spot + 0.5 * reconstruction + 0.1 * background + 0.05 * overlap
+    return {
+        "total": total,
+        "spot": spot,
+        "reconstruction": reconstruction,
+        "background": background,
+        "overlap": overlap,
+    }
+
+
+def separation_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    image: torch.Tensor,
+) -> torch.Tensor:
+    return separation_loss_components(prediction, target, image)["total"]
 
 
 def align_prediction_channels(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -145,7 +224,7 @@ def evaluate(model, dataloader, device, amp):
                         logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                     )
                 prediction = spot_intensity_prediction(logits)
-                losses.append(permutation_invariant_l1_loss(prediction, targets))
+                losses.append(separation_loss(prediction, targets, images))
 
     model.train()
     if not losses:
@@ -230,13 +309,12 @@ def train_model(
     h5_file: Path = dir_h5_spot_segmentation,
     epochs: int = 5,
     batch_size: int = 1,
-    learning_rate: float = 1e-5,
+    learning_rate: float = 1e-4,
     val_percent: float = 0.1,
     save_checkpoint: bool = True,
-    img_scale: float = 0.5,
+    img_scale: float = 1.0,
     amp: bool = False,
     weight_decay: float = 1e-8,
-    momentum: float = 0.999,
     gradient_clipping: float = 1.0,
     log_dir: Path = dir_runs,
     run_name: str | None = None,
@@ -276,6 +354,8 @@ def train_model(
             "h5_file": str(h5_file),
             "run_name": run_name,
             "preview_samples": preview_samples,
+            "optimizer": "AdamW",
+            "loss": "weighted_pi_l1+0.5_sum+0.1_background+0.05_overlap",
         },
         {"hparam/metric": 0},
     )
@@ -305,11 +385,10 @@ def train_model(
         amp,
     )
 
-    optimizer = optim.RMSprop(
+    optimizer = optim.AdamW(
         model.parameters(),
         lr=learning_rate,
         weight_decay=weight_decay,
-        momentum=momentum,
         foreach=True,
     )
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=5)
@@ -338,7 +417,8 @@ def train_model(
                             logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                         )
                     predictions = spot_intensity_prediction(logits)
-                    loss = permutation_invariant_l1_loss(predictions, targets)
+                    loss_parts = separation_loss_components(predictions, targets, images)
+                    loss = loss_parts["total"]
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -351,6 +431,10 @@ def train_model(
                 global_step += 1
                 epoch_loss += loss.item()
                 writer.add_scalar("Loss/train_batch", loss.item(), global_step)
+                writer.add_scalar("Loss_parts/train_spot", loss_parts["spot"].item(), global_step)
+                writer.add_scalar("Loss_parts/train_reconstruction", loss_parts["reconstruction"].item(), global_step)
+                writer.add_scalar("Loss_parts/train_background", loss_parts["background"].item(), global_step)
+                writer.add_scalar("Loss_parts/train_overlap", loss_parts["overlap"].item(), global_step)
                 pbar.set_postfix(**{"loss (batch)": loss.item()})
 
                 division_step = n_train // (5 * batch_size)
@@ -365,7 +449,7 @@ def train_model(
                     val_score = evaluate(model, val_loader, device, amp)
                     scheduler.step(val_score)
 
-                    logging.info("Validation separation L1 loss: %s", val_score)
+                    logging.info("Validation separation loss: %s", val_score)
                     writer.add_scalar("Learning_rate", optimizer.param_groups[0]["lr"], global_step)
                     writer.add_scalar("Loss/validation_step", val_score, global_step)
                     writer.add_image("input_images", images[0], global_step)
@@ -390,7 +474,7 @@ def train_model(
         writer.add_scalar("Loss/train_epoch", mean_epoch_loss, epoch)
         writer.add_scalar("Loss/validation_epoch", val_score, epoch)
         logging.info("Epoch %d mean training loss: %s", epoch, mean_epoch_loss)
-        logging.info("Epoch %d validation separation L1 loss: %s", epoch, val_score)
+        logging.info("Epoch %d validation separation loss: %s", epoch, val_score)
 
         if save_checkpoint:
             dir_checkpoint.mkdir(parents=True, exist_ok=True)
@@ -404,9 +488,9 @@ def get_args():
     parser = argparse.ArgumentParser(description="Train the UNet on HDF5 spot separation data")
     parser.add_argument("--epochs", "-e", metavar="E", type=int, default=5, help="Number of epochs")
     parser.add_argument("--batch-size", "-b", dest="batch_size", metavar="B", type=int, default=1, help="Batch size")
-    parser.add_argument("--learning-rate", "-l", metavar="LR", type=float, default=1e-5, help="Learning rate", dest="lr")
+    parser.add_argument("--learning-rate", "-l", metavar="LR", type=float, default=1e-4, help="Learning rate", dest="lr")
     parser.add_argument("--load", "-f", type=str, default=False, help="Load model from a .pth file")
-    parser.add_argument("--scale", "-s", type=float, default=0.5, help="Downscaling factor of the images")
+    parser.add_argument("--scale", "-s", type=float, default=1.0, help="Downscaling factor of the images")
     parser.add_argument(
         "--validation",
         "-v",
