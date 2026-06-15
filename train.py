@@ -21,7 +21,7 @@ from unet_model import UNet
 
 
 dir_checkpoint = Path("./checkpoints/")
-dir_h5_spot_segmentation = Path("../data_esrf/augmented_spot_patches.h5")
+dir_h5_spot_segmentation = Path("./data/augmented_spot_patches.h5")
 dir_runs = Path("./runs/")
 dir_previews = Path("./prediction_previews/")
 
@@ -148,10 +148,9 @@ def background_l1_loss(
     image: torch.Tensor,
     background_threshold: float = 1e-4,
 ) -> torch.Tensor:
-    background = image <= background_threshold
-    if not background.any():
-        return prediction.new_tensor(0.0)
-    return prediction.masked_select(background.expand_as(prediction)).abs().mean()
+    background = (image <= background_threshold).to(dtype=prediction.dtype)
+    denominator = (background.sum() * prediction.shape[1]).clamp_min(1.0)
+    return (prediction.abs() * background).sum() / denominator
 
 
 def overlap_exclusivity_loss(
@@ -160,11 +159,9 @@ def overlap_exclusivity_loss(
     foreground_threshold: float = 1e-4,
 ) -> torch.Tensor:
     target_overlap = (target[:, 0:1] > foreground_threshold) & (target[:, 1:2] > foreground_threshold)
-    disallowed_overlap = ~target_overlap
-    if not disallowed_overlap.any():
-        return prediction.new_tensor(0.0)
+    disallowed_overlap = (~target_overlap).to(dtype=prediction.dtype)
     overlap_intensity = prediction[:, 0:1] * prediction[:, 1:2]
-    return overlap_intensity.masked_select(disallowed_overlap).mean()
+    return (overlap_intensity * disallowed_overlap).sum() / disallowed_overlap.sum().clamp_min(1.0)
 
 
 def separation_loss_components(
@@ -312,7 +309,7 @@ def train_model(
     learning_rate: float = 1e-4,
     val_percent: float = 0.1,
     save_checkpoint: bool = True,
-    img_scale: float = 1.0,
+    img_scale: float = 0.5,
     amp: bool = False,
     weight_decay: float = 1e-8,
     gradient_clipping: float = 1.0,
@@ -429,13 +426,28 @@ def train_model(
 
                 pbar.update(images.shape[0])
                 global_step += 1
-                epoch_loss += loss.item()
-                writer.add_scalar("Loss/train_batch", loss.item(), global_step)
-                writer.add_scalar("Loss_parts/train_spot", loss_parts["spot"].item(), global_step)
-                writer.add_scalar("Loss_parts/train_reconstruction", loss_parts["reconstruction"].item(), global_step)
-                writer.add_scalar("Loss_parts/train_background", loss_parts["background"].item(), global_step)
-                writer.add_scalar("Loss_parts/train_overlap", loss_parts["overlap"].item(), global_step)
-                pbar.set_postfix(**{"loss (batch)": loss.item()})
+                loss_values = (
+                    torch.stack(
+                        (
+                            loss_parts["total"],
+                            loss_parts["spot"],
+                            loss_parts["reconstruction"],
+                            loss_parts["background"],
+                            loss_parts["overlap"],
+                        )
+                    )
+                    .detach()
+                    .cpu()
+                    .tolist()
+                )
+                total_loss, spot_loss, reconstruction_loss, background_loss, overlap_loss = loss_values
+                epoch_loss += total_loss
+                writer.add_scalar("Loss/train_batch", total_loss, global_step)
+                writer.add_scalar("Loss_parts/train_spot", spot_loss, global_step)
+                writer.add_scalar("Loss_parts/train_reconstruction", reconstruction_loss, global_step)
+                writer.add_scalar("Loss_parts/train_background", background_loss, global_step)
+                writer.add_scalar("Loss_parts/train_overlap", overlap_loss, global_step)
+                pbar.set_postfix(**{"loss (batch)": total_loss})
 
                 division_step = n_train // (5 * batch_size)
                 if division_step > 0 and global_step % division_step == 0:
@@ -490,7 +502,7 @@ def get_args():
     parser.add_argument("--batch-size", "-b", dest="batch_size", metavar="B", type=int, default=1, help="Batch size")
     parser.add_argument("--learning-rate", "-l", metavar="LR", type=float, default=1e-4, help="Learning rate", dest="lr")
     parser.add_argument("--load", "-f", type=str, default=False, help="Load model from a .pth file")
-    parser.add_argument("--scale", "-s", type=float, default=1.0, help="Downscaling factor of the images")
+    parser.add_argument("--scale", "-s", type=float, default=0.5, help="Downscaling factor of the images")
     parser.add_argument(
         "--validation",
         "-v",
