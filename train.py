@@ -110,37 +110,39 @@ class H5SpotSeparationDataset(Dataset):
         return {"image": image_tensor, "target": target_tensor}
 
 
-def spot_intensity_prediction(logits: torch.Tensor) -> torch.Tensor:
-    return F.softplus(logits)
+def spot_intensity_prediction(logits: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+    return torch.sigmoid(logits) * image
 
 
-def weighted_l1_per_sample(
+def compose_spot_predictions(first_spot: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+    second_spot = (image - first_spot).clamp_min(0.0)
+    return torch.cat((first_spot, second_spot), dim=1)
+
+
+def soft_dice_per_sample(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    smooth: float = 1.0,
+) -> torch.Tensor:
+    numerator = 2.0 * (prediction * target).sum(dim=(2, 3)) + smooth
+    denominator = prediction.sum(dim=(2, 3)) + target.sum(dim=(2, 3)) + smooth
+    return numerator / denominator
+
+
+def soft_dice_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    return 1.0 - soft_dice_per_sample(prediction, target).mean()
+
+
+def foreground_weighted_l1_loss(
     prediction: torch.Tensor,
     target: torch.Tensor,
     foreground_weight: float = 8.0,
     foreground_threshold: float = 1e-4,
 ) -> torch.Tensor:
-    """L1 with extra weight on nonzero target pixels, normalized per sample."""
     error = (prediction - target).abs()
     foreground = (target > foreground_threshold).to(dtype=error.dtype)
     weights = 1.0 + foreground_weight * foreground
-    numerator = (error * weights).sum(dim=(1, 2, 3))
-    denominator = weights.sum(dim=(1, 2, 3)).clamp_min(1.0)
-    return numerator / denominator
-
-
-def permutation_invariant_weighted_l1_loss(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    foreground_weight: float = 8.0,
-) -> torch.Tensor:
-    direct = weighted_l1_per_sample(prediction, target, foreground_weight=foreground_weight)
-    swapped = weighted_l1_per_sample(prediction, target.flip(1), foreground_weight=foreground_weight)
-    return torch.minimum(direct, swapped).mean()
-
-
-def reconstruction_l1_loss(prediction: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
-    return F.l1_loss(prediction.sum(dim=1, keepdim=True), image)
+    return (error * weights).sum() / weights.sum().clamp_min(1.0)
 
 
 def background_l1_loss(
@@ -153,56 +155,35 @@ def background_l1_loss(
     return (prediction.abs() * background).sum() / denominator
 
 
-def overlap_exclusivity_loss(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    foreground_threshold: float = 1e-4,
-) -> torch.Tensor:
-    target_overlap = (target[:, 0:1] > foreground_threshold) & (target[:, 1:2] > foreground_threshold)
-    disallowed_overlap = (~target_overlap).to(dtype=prediction.dtype)
-    overlap_intensity = prediction[:, 0:1] * prediction[:, 1:2]
-    return (overlap_intensity * disallowed_overlap).sum() / disallowed_overlap.sum().clamp_min(1.0)
-
-
 def separation_loss_components(
-    prediction: torch.Tensor,
+    first_spot_prediction: torch.Tensor,
     target: torch.Tensor,
     image: torch.Tensor,
     foreground_weight: float = 8.0,
 ) -> dict[str, torch.Tensor]:
-    spot = permutation_invariant_weighted_l1_loss(
+    prediction = compose_spot_predictions(first_spot_prediction, image)
+    dice = soft_dice_loss(prediction, target)
+    intensity = foreground_weighted_l1_loss(
         prediction,
         target,
         foreground_weight=foreground_weight,
     )
-    reconstruction = reconstruction_l1_loss(prediction, image)
-    background = background_l1_loss(prediction, image)
-    overlap = overlap_exclusivity_loss(prediction, target)
-    total = spot + 0.5 * reconstruction + 0.1 * background + 0.05 * overlap
+    background = background_l1_loss(first_spot_prediction, image)
+    total = dice + 0.25 * intensity + 0.02 * background
     return {
         "total": total,
-        "spot": spot,
-        "reconstruction": reconstruction,
+        "dice": dice,
+        "intensity": intensity,
         "background": background,
-        "overlap": overlap,
     }
 
 
 def separation_loss(
-    prediction: torch.Tensor,
+    first_spot_prediction: torch.Tensor,
     target: torch.Tensor,
     image: torch.Tensor,
 ) -> torch.Tensor:
-    return separation_loss_components(prediction, target, image)["total"]
-
-
-def align_prediction_channels(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    direct = F.l1_loss(prediction, target, reduction="none").mean(dim=(1, 2, 3))
-    swapped = F.l1_loss(prediction, target.flip(1), reduction="none").mean(dim=(1, 2, 3))
-    use_swapped = swapped < direct
-    aligned = prediction.clone()
-    aligned[use_swapped] = prediction[use_swapped].flip(1)
-    return aligned
+    return separation_loss_components(first_spot_prediction, target, image)["total"]
 
 
 def evaluate(model, dataloader, device, amp):
@@ -216,11 +197,11 @@ def evaluate(model, dataloader, device, amp):
 
             with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
                 logits = model(images)
-                if logits.shape != targets.shape:
+                if logits.shape[2:] != targets.shape[2:]:
                     logits = F.interpolate(
                         logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                     )
-                prediction = spot_intensity_prediction(logits)
+                prediction = spot_intensity_prediction(logits, images)
                 losses.append(separation_loss(prediction, targets, images))
 
     model.train()
@@ -253,9 +234,10 @@ def save_prediction_previews(
 
             with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
                 logits = model(images)
-                if logits.shape != targets.shape:
+                if logits.shape[2:] != targets.shape[2:]:
                     logits = F.interpolate(logits, size=targets.shape[2:], mode="bilinear", align_corners=False)
-                predictions = align_prediction_channels(spot_intensity_prediction(logits), targets)
+                first_spot_predictions = spot_intensity_prediction(logits, images)
+                predictions = compose_spot_predictions(first_spot_predictions, images)
 
             batch_size = images.shape[0]
             for sample_idx in range(batch_size):
@@ -268,7 +250,7 @@ def save_prediction_previews(
                 pred_spots = predictions[sample_idx].detach().cpu().numpy()
                 true_sum = true_spots.sum(axis=0)
                 pred_sum = pred_spots.sum(axis=0)
-                error = np.abs(pred_sum - true_sum)
+                residual_error = np.abs(pred_spots[1] - true_spots[1])
 
                 fig, axes = plt.subplots(2, 4, figsize=(12, 6), constrained_layout=True)
                 panels = [
@@ -278,8 +260,8 @@ def save_prediction_previews(
                     (np.abs(pred_spots[0] - true_spots[0]), "error spot 1", "magma", 0.0, 1.0),
                     (true_sum, "true sum", "gray", 0.0, 1.0),
                     (true_spots[1], "true spot 2", "gray", 0.0, 1.0),
-                    (pred_spots[1], "pred spot 2", "gray", 0.0, 1.0),
-                    (error, "sum error", "magma", 0.0, 1.0),
+                    (pred_spots[1], "residual spot 2", "gray", 0.0, 1.0),
+                    (residual_error, "error spot 2", "magma", 0.0, 1.0),
                 ]
                 for axis, (data, title, cmap, vmin, vmax) in zip(axes.flat, panels):
                     axis.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
@@ -352,7 +334,7 @@ def train_model(
             "run_name": run_name,
             "preview_samples": preview_samples,
             "optimizer": "AdamW",
-            "loss": "weighted_pi_l1+0.5_sum+0.1_background+0.05_overlap",
+            "loss": "reference_spot_soft_dice+0.25_foreground_l1+0.02_background",
         },
         {"hparam/metric": 0},
     )
@@ -409,11 +391,11 @@ def train_model(
 
                 with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
                     logits = model(images)
-                    if logits.shape != targets.shape:
+                    if logits.shape[2:] != targets.shape[2:]:
                         logits = F.interpolate(
                             logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                         )
-                    predictions = spot_intensity_prediction(logits)
+                    predictions = spot_intensity_prediction(logits, images)
                     loss_parts = separation_loss_components(predictions, targets, images)
                     loss = loss_parts["total"]
 
@@ -430,23 +412,21 @@ def train_model(
                     torch.stack(
                         (
                             loss_parts["total"],
-                            loss_parts["spot"],
-                            loss_parts["reconstruction"],
+                            loss_parts["dice"],
+                            loss_parts["intensity"],
                             loss_parts["background"],
-                            loss_parts["overlap"],
                         )
                     )
                     .detach()
                     .cpu()
                     .tolist()
                 )
-                total_loss, spot_loss, reconstruction_loss, background_loss, overlap_loss = loss_values
+                total_loss, dice_loss, intensity_loss, background_loss = loss_values
                 epoch_loss += total_loss
                 writer.add_scalar("Loss/train_batch", total_loss, global_step)
-                writer.add_scalar("Loss_parts/train_spot", spot_loss, global_step)
-                writer.add_scalar("Loss_parts/train_reconstruction", reconstruction_loss, global_step)
+                writer.add_scalar("Loss_parts/train_dice", dice_loss, global_step)
+                writer.add_scalar("Loss_parts/train_intensity", intensity_loss, global_step)
                 writer.add_scalar("Loss_parts/train_background", background_loss, global_step)
-                writer.add_scalar("Loss_parts/train_overlap", overlap_loss, global_step)
                 pbar.set_postfix(**{"loss (batch)": total_loss})
 
                 division_step = n_train // (5 * batch_size)
@@ -467,9 +447,9 @@ def train_model(
                     writer.add_image("input_images", images[0], global_step)
                     writer.add_image("spots/true_1", targets[0, 0:1].float(), global_step)
                     writer.add_image("spots/true_2", targets[0, 1:2].float(), global_step)
-                    aligned = align_prediction_channels(predictions[:1], targets[:1])
-                    writer.add_image("spots/pred_1", aligned[0, 0:1].float(), global_step)
-                    writer.add_image("spots/pred_2", aligned[0, 1:2].float(), global_step)
+                    preview_predictions = compose_spot_predictions(predictions[:1], images[:1])
+                    writer.add_image("spots/pred_1", preview_predictions[0, 0:1].float(), global_step)
+                    writer.add_image("spots/residual_pred_2", preview_predictions[0, 1:2].float(), global_step)
 
         mean_epoch_loss = epoch_loss / max(1, len(train_loader))
         val_score = evaluate(model, val_loader, device, amp)
@@ -528,7 +508,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info("Using device %s", device)
 
-    model = UNet(n_channels=1, n_classes=2, bilinear=args.bilinear)
+    model = UNet(n_channels=1, n_classes=1, bilinear=args.bilinear)
     model = model.to(memory_format=torch.channels_last)
 
     logging.info(
@@ -541,7 +521,16 @@ if __name__ == "__main__":
     if args.load:
         state_dict = torch.load(args.load, map_location=device)
         state_dict.pop("mask_values", None)
-        model.load_state_dict(state_dict)
+        model_state = model.state_dict()
+        compatible_state = {
+            name: value
+            for name, value in state_dict.items()
+            if name in model_state and value.shape == model_state[name].shape
+        }
+        skipped_keys = sorted(set(state_dict) - set(compatible_state))
+        model.load_state_dict(compatible_state, strict=False)
+        if skipped_keys:
+            logging.info("Skipped incompatible checkpoint keys: %s", ", ".join(skipped_keys))
         logging.info("Model loaded from %s", args.load)
 
     model.to(device=device)
