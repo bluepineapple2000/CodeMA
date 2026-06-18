@@ -161,21 +161,106 @@ def separation_loss_components(
     image: torch.Tensor,
     foreground_weight: float = 8.0,
 ) -> dict[str, torch.Tensor]:
-    prediction = compose_spot_predictions(first_spot_prediction, image)
-    dice = soft_dice_loss(prediction, target)
+    first_spot_target = target[:, 0:1]
+    dice = soft_dice_loss(first_spot_prediction, first_spot_target)
     intensity = foreground_weighted_l1_loss(
-        prediction,
-        target,
+        first_spot_prediction,
+        first_spot_target,
         foreground_weight=foreground_weight,
     )
     background = background_l1_loss(first_spot_prediction, image)
-    total = dice + 0.25 * intensity + 0.02 * background
+    total = dice + 0.25 * intensity + 0.01 * background
     return {
         "total": total,
         "dice": dice,
         "intensity": intensity,
         "background": background,
     }
+
+
+def separation_metric_tensors(
+    first_spot_prediction: torch.Tensor,
+    target: torch.Tensor,
+    image: torch.Tensor,
+    threshold: float = 1e-4,
+) -> dict[str, torch.Tensor]:
+    prediction = compose_spot_predictions(first_spot_prediction, image)
+    loss_parts = separation_loss_components(first_spot_prediction, target, image)
+    first_spot_target = target[:, 0:1]
+    first_spot_error = (first_spot_prediction - first_spot_target).abs()
+    first_spot_squared_error = (first_spot_prediction - first_spot_target).square()
+    two_spot_absolute_error = (prediction - target).abs()
+    two_spot_squared_error = (prediction - target).square()
+    foreground = first_spot_target > threshold
+    background = ~foreground
+
+    hard_prediction = first_spot_prediction > threshold
+    hard_target = first_spot_target > threshold
+    true_positive = (hard_prediction & hard_target).sum(dtype=torch.float32)
+    false_positive = (hard_prediction & ~hard_target).sum(dtype=torch.float32)
+    false_negative = (~hard_prediction & hard_target).sum(dtype=torch.float32)
+    true_negative = (~hard_prediction & ~hard_target).sum(dtype=torch.float32)
+
+    precision = true_positive / (true_positive + false_positive).clamp_min(1.0)
+    recall = true_positive / (true_positive + false_negative).clamp_min(1.0)
+    f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1e-8)
+    iou = true_positive / (true_positive + false_positive + false_negative).clamp_min(1.0)
+    pixel_accuracy = (true_positive + true_negative) / hard_target.numel()
+
+    per_spot_soft_dice = soft_dice_per_sample(prediction, target)
+    reconstruction = prediction.sum(dim=1, keepdim=True)
+
+    return {
+        "loss_total": loss_parts["total"],
+        "loss_dice": loss_parts["dice"],
+        "loss_intensity": loss_parts["intensity"],
+        "loss_background": loss_parts["background"],
+        "soft_dice": soft_dice_per_sample(first_spot_prediction, first_spot_target).mean(),
+        "soft_dice_spot_1": per_spot_soft_dice[:, 0].mean(),
+        "soft_dice_spot_2": per_spot_soft_dice[:, 1].mean(),
+        "two_spot_soft_dice": per_spot_soft_dice.mean(),
+        "mae": first_spot_error.mean(),
+        "rmse": first_spot_squared_error.mean().sqrt(),
+        "two_spot_mae": two_spot_absolute_error.mean(),
+        "two_spot_rmse": two_spot_squared_error.mean().sqrt(),
+        "foreground_mae": first_spot_error[foreground].mean() if foreground.any() else first_spot_error.new_tensor(0.0),
+        "background_mae": first_spot_error[background].mean() if background.any() else first_spot_error.new_tensor(0.0),
+        "spot_1_mae": two_spot_absolute_error[:, 0].mean(),
+        "spot_2_mae": two_spot_absolute_error[:, 1].mean(),
+        "spot_1_rmse": two_spot_squared_error[:, 0].mean().sqrt(),
+        "spot_2_rmse": two_spot_squared_error[:, 1].mean().sqrt(),
+        "reconstruction_mae": (reconstruction - image).abs().mean(),
+        "reconstruction_rmse": (reconstruction - image).square().mean().sqrt(),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "iou": iou,
+        "pixel_accuracy": pixel_accuracy,
+        "predicted_foreground_fraction": hard_prediction.float().mean(),
+        "target_foreground_fraction": hard_target.float().mean(),
+        "prediction_mean": first_spot_prediction.mean(),
+        "target_mean": first_spot_target.mean(),
+        "prediction_sum": first_spot_prediction.sum(),
+        "target_sum": first_spot_target.sum(),
+    }
+
+
+def metrics_to_floats(metrics: dict[str, torch.Tensor]) -> dict[str, float]:
+    return {name: value.detach().float().cpu().item() for name, value in metrics.items()}
+
+
+def average_metric_dicts(metric_dicts: list[dict[str, float]]) -> dict[str, float]:
+    if not metric_dicts:
+        return {}
+    return {
+        name: float(np.mean([metrics[name] for metrics in metric_dicts]))
+        for name in metric_dicts[0]
+    }
+
+
+def log_metrics(writer: SummaryWriter, prefix: str, metrics: dict[str, float], step: int) -> None:
+    for name, value in metrics.items():
+        writer.add_scalar(f"{prefix}/{name}", value, step)
 
 
 def separation_loss(
@@ -188,7 +273,7 @@ def separation_loss(
 
 def evaluate(model, dataloader, device, amp):
     model.eval()
-    losses = []
+    metric_dicts = []
 
     with torch.no_grad():
         for batch in dataloader:
@@ -202,12 +287,10 @@ def evaluate(model, dataloader, device, amp):
                         logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                     )
                 prediction = spot_intensity_prediction(logits, images)
-                losses.append(separation_loss(prediction, targets, images))
+                metric_dicts.append(metrics_to_floats(separation_metric_tensors(prediction, targets, images)))
 
     model.train()
-    if not losses:
-        return 0.0
-    return torch.stack(losses).mean().item()
+    return average_metric_dicts(metric_dicts)
 
 
 def save_prediction_previews(
@@ -334,7 +417,7 @@ def train_model(
             "run_name": run_name,
             "preview_samples": preview_samples,
             "optimizer": "AdamW",
-            "loss": "reference_spot_soft_dice+0.25_foreground_l1+0.02_background",
+            "loss": "first_spot_soft_dice+0.25_first_spot_foreground_l1+0.01_background",
         },
         {"hparam/metric": 0},
     )
@@ -376,7 +459,7 @@ def train_model(
 
     for epoch in range(1, epochs + 1):
         model.train()
-        epoch_loss = 0.0
+        train_epoch_metrics = []
         with tqdm(total=n_train, desc=f"Epoch {epoch}/{epochs}", unit="img") as pbar:
             for batch in train_loader:
                 images = batch["image"]
@@ -408,26 +491,15 @@ def train_model(
 
                 pbar.update(images.shape[0])
                 global_step += 1
-                loss_values = (
-                    torch.stack(
-                        (
-                            loss_parts["total"],
-                            loss_parts["dice"],
-                            loss_parts["intensity"],
-                            loss_parts["background"],
-                        )
-                    )
-                    .detach()
-                    .cpu()
-                    .tolist()
-                )
-                total_loss, dice_loss, intensity_loss, background_loss = loss_values
-                epoch_loss += total_loss
-                writer.add_scalar("Loss/train_batch", total_loss, global_step)
-                writer.add_scalar("Loss_parts/train_dice", dice_loss, global_step)
-                writer.add_scalar("Loss_parts/train_intensity", intensity_loss, global_step)
-                writer.add_scalar("Loss_parts/train_background", background_loss, global_step)
-                pbar.set_postfix(**{"loss (batch)": total_loss})
+                with torch.no_grad():
+                    batch_metrics = metrics_to_floats(separation_metric_tensors(predictions, targets, images))
+                train_epoch_metrics.append(batch_metrics)
+                log_metrics(writer, "train_batch", batch_metrics, global_step)
+                writer.add_scalar("Loss/train_batch", batch_metrics["loss_total"], global_step)
+                writer.add_scalar("Loss_parts/train_dice", batch_metrics["loss_dice"], global_step)
+                writer.add_scalar("Loss_parts/train_intensity", batch_metrics["loss_intensity"], global_step)
+                writer.add_scalar("Loss_parts/train_background", batch_metrics["loss_background"], global_step)
+                pbar.set_postfix(**{"loss (batch)": batch_metrics["loss_total"]})
 
                 division_step = n_train // (5 * batch_size)
                 if division_step > 0 and global_step % division_step == 0:
@@ -438,12 +510,14 @@ def train_model(
                         if value.grad is not None and not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                             writer.add_histogram(f"Gradients/{tag}", value.grad.data, global_step)
 
-                    val_score = evaluate(model, val_loader, device, amp)
+                    val_metrics = evaluate(model, val_loader, device, amp)
+                    val_score = val_metrics.get("loss_total", 0.0)
                     scheduler.step(val_score)
 
                     logging.info("Validation separation loss: %s", val_score)
                     writer.add_scalar("Learning_rate", optimizer.param_groups[0]["lr"], global_step)
                     writer.add_scalar("Loss/validation_step", val_score, global_step)
+                    log_metrics(writer, "validation_step", val_metrics, global_step)
                     writer.add_image("input_images", images[0], global_step)
                     writer.add_image("spots/true_1", targets[0, 0:1].float(), global_step)
                     writer.add_image("spots/true_2", targets[0, 1:2].float(), global_step)
@@ -451,8 +525,10 @@ def train_model(
                     writer.add_image("spots/pred_1", preview_predictions[0, 0:1].float(), global_step)
                     writer.add_image("spots/residual_pred_2", preview_predictions[0, 1:2].float(), global_step)
 
-        mean_epoch_loss = epoch_loss / max(1, len(train_loader))
-        val_score = evaluate(model, val_loader, device, amp)
+        train_metrics = average_metric_dicts(train_epoch_metrics)
+        val_metrics = evaluate(model, val_loader, device, amp)
+        mean_epoch_loss = train_metrics.get("loss_total", 0.0)
+        val_score = val_metrics.get("loss_total", 0.0)
         scheduler.step(val_score)
         save_prediction_previews(
             model,
@@ -465,6 +541,8 @@ def train_model(
         )
         writer.add_scalar("Loss/train_epoch", mean_epoch_loss, epoch)
         writer.add_scalar("Loss/validation_epoch", val_score, epoch)
+        log_metrics(writer, "train_epoch", train_metrics, epoch)
+        log_metrics(writer, "validation_epoch", val_metrics, epoch)
         logging.info("Epoch %d mean training loss: %s", epoch, mean_epoch_loss)
         logging.info("Epoch %d validation separation loss: %s", epoch, val_score)
 
