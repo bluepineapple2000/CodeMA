@@ -21,13 +21,13 @@ from unet_model import UNet
 
 
 dir_checkpoint = Path("./checkpoints/")
-dir_h5_spot_segmentation = Path("./data/augmented_spot_patches.h5")
+dir_h5_spot_segmentation = Path("./data/augmented_spot_patches_with_masks.h5")
 dir_runs = Path("./runs/")
 dir_previews = Path("./prediction_previews/")
 
 
 class H5SpotSeparationDataset(Dataset):
-    """Spot separation samples stored as HDF5 groups with image/spot_images datasets."""
+    """Spot separation samples stored as HDF5 groups with image/spot_images/spot_masks datasets."""
 
     def __init__(self, h5_file: Path, img_scale: float = 1.0):
         self.h5_file = Path(h5_file)
@@ -40,13 +40,16 @@ class H5SpotSeparationDataset(Dataset):
             self.sample_names = sorted(
                 name
                 for name, obj in f.items()
-                if isinstance(obj, h5py.Group) and "image" in obj and "spot_images" in obj
+                if isinstance(obj, h5py.Group)
+                and "image" in obj
+                and "spot_images" in obj
+                and "spot_masks" in obj
             )
 
         if not self.sample_names:
             raise ValueError(
-                f"No image/spot_images sample groups found in {self.h5_file}. "
-                "Regenerate the augmentation archive with separated spot intensity targets."
+                f"No image/spot_images/spot_masks sample groups found in {self.h5_file}. "
+                "Run the augmentation conversion notebook to add separated spot mask targets."
             )
 
         logging.info("Found %d HDF5 spot separation samples", len(self.sample_names))
@@ -85,15 +88,22 @@ class H5SpotSeparationDataset(Dataset):
         with h5py.File(self.h5_file, "r") as f:
             image = f[sample_name]["image"][()]
             targets = f[sample_name]["spot_images"][()]
+            masks = f[sample_name]["spot_masks"][()]
 
         if image.ndim == 3:
             image = image.mean(axis=-1)
         if targets.ndim != 3 or targets.shape[0] != 2:
             raise ValueError(f"{sample_name}: expected spot_images shape (2, H, W), got {targets.shape}")
+        if masks.ndim != 3 or masks.shape[0] != 2:
+            raise ValueError(f"{sample_name}: expected spot_masks shape (2, H, W), got {masks.shape}")
+        if masks.shape != targets.shape:
+            raise ValueError(f"{sample_name}: spot_masks shape {masks.shape} does not match spot_images {targets.shape}")
 
         image, targets = self.normalize_image_and_targets(image, targets)
+        masks = (masks > 0).astype(np.float32, copy=False)
         image_tensor = torch.from_numpy(image).unsqueeze(0)
         target_tensor = torch.from_numpy(targets)
+        mask_tensor = torch.from_numpy(masks)
 
         if self.img_scale != 1.0:
             size = (
@@ -106,17 +116,29 @@ class H5SpotSeparationDataset(Dataset):
             target_tensor = F.interpolate(
                 target_tensor.unsqueeze(0), size=size, mode="bilinear", align_corners=False
             ).squeeze(0)
+            mask_tensor = F.interpolate(mask_tensor.unsqueeze(0), size=size, mode="nearest").squeeze(0)
 
-        return {"image": image_tensor, "target": target_tensor}
-
-
-def spot_intensity_prediction(logits: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
-    return torch.sigmoid(logits) * image
+        return {"image": image_tensor, "target": target_tensor, "mask": mask_tensor}
 
 
-def compose_spot_predictions(first_spot: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
-    second_spot = (image - first_spot).clamp_min(0.0)
-    return torch.cat((first_spot, second_spot), dim=1)
+def spot_separation_prediction(logits: torch.Tensor, image: torch.Tensor) -> dict[str, torch.Tensor]:
+    if logits.shape[1] != 4:
+        raise ValueError(f"Expected 4 output channels, got {logits.shape[1]}")
+
+    mask_logits = logits[:, 0:2]
+    fraction_logits = logits[:, 2:4]
+    masks = torch.sigmoid(mask_logits)
+    fractions = torch.softmax(fraction_logits, dim=1)
+    intensities = fractions * image
+    reconstruction = intensities.sum(dim=1, keepdim=True)
+    return {
+        "mask_logits": mask_logits,
+        "fraction_logits": fraction_logits,
+        "masks": masks,
+        "fractions": fractions,
+        "intensities": intensities,
+        "reconstruction": reconstruction,
+    }
 
 
 def soft_dice_per_sample(
@@ -156,46 +178,71 @@ def background_l1_loss(
 
 
 def separation_loss_components(
-    first_spot_prediction: torch.Tensor,
+    outputs: dict[str, torch.Tensor],
     target: torch.Tensor,
+    mask_target: torch.Tensor,
     image: torch.Tensor,
-    foreground_weight: float = 8.0,
+    background_weight: float = 0.05,
+    wrong_spot_weight: float = 2.0,
 ) -> dict[str, torch.Tensor]:
-    first_spot_target = target[:, 0:1]
-    dice = soft_dice_loss(first_spot_prediction, first_spot_target)
+    prediction = outputs["intensities"]
+    mask_prediction = outputs["masks"]
+    mask_logits = outputs["mask_logits"]
+    reconstruction = outputs["reconstruction"]
+
+    dice = soft_dice_loss(mask_prediction, mask_target)
     intensity = foreground_weighted_l1_loss(
-        first_spot_prediction,
-        first_spot_target,
-        foreground_weight=foreground_weight,
+        prediction,
+        target,
     )
-    background = background_l1_loss(first_spot_prediction, image)
-    total = dice + 0.25 * intensity + 0.01 * background
+    mask_bce_per_pixel = F.binary_cross_entropy_with_logits(mask_logits, mask_target, reduction="none")
+    bce_weights = torch.where(
+        mask_target > 0.5,
+        torch.ones_like(mask_target),
+        torch.full_like(mask_target, background_weight),
+    )
+    mask_bce = (mask_bce_per_pixel * bce_weights).sum() / bce_weights.sum().clamp_min(1e-6)
+
+    wrong_spot_1 = mask_prediction[:, 0] * mask_target[:, 1] * (1.0 - mask_target[:, 0])
+    wrong_spot_2 = mask_prediction[:, 1] * mask_target[:, 0] * (1.0 - mask_target[:, 1])
+    wrong_spot = wrong_spot_1.mean() + wrong_spot_2.mean()
+
+    mask_dice = dice
+    reconstruction_loss = (reconstruction - image).abs().mean()
+    outside_mask = (prediction * (1.0 - mask_target)).abs().mean()
+    background = background_l1_loss(prediction, image)
+    total = dice + mask_bce + wrong_spot_weight * wrong_spot
     return {
         "total": total,
         "dice": dice,
         "intensity": intensity,
+        "mask_bce": mask_bce,
+        "mask_dice": mask_dice,
+        "wrong_spot": wrong_spot,
+        "reconstruction": reconstruction_loss,
+        "outside_mask": outside_mask,
         "background": background,
     }
 
 
 def separation_metric_tensors(
-    first_spot_prediction: torch.Tensor,
+    outputs: dict[str, torch.Tensor],
     target: torch.Tensor,
+    mask_target: torch.Tensor,
     image: torch.Tensor,
-    threshold: float = 1e-4,
+    mask_threshold: float = 0.5,
 ) -> dict[str, torch.Tensor]:
-    prediction = compose_spot_predictions(first_spot_prediction, image)
-    loss_parts = separation_loss_components(first_spot_prediction, target, image)
-    first_spot_target = target[:, 0:1]
-    first_spot_error = (first_spot_prediction - first_spot_target).abs()
-    first_spot_squared_error = (first_spot_prediction - first_spot_target).square()
-    two_spot_absolute_error = (prediction - target).abs()
-    two_spot_squared_error = (prediction - target).square()
-    foreground = first_spot_target > threshold
+    prediction = outputs["intensities"]
+    mask_prediction = outputs["masks"]
+    reconstruction = outputs["reconstruction"]
+    loss_parts = separation_loss_components(outputs, target, mask_target, image)
+    absolute_error = (prediction - target).abs()
+    squared_error = (prediction - target).square()
+    foreground = mask_target > 0.5
     background = ~foreground
 
-    hard_prediction = first_spot_prediction > threshold
-    hard_target = first_spot_target > threshold
+    hard_prediction = mask_prediction > mask_threshold
+    hard_target = mask_target > 0.5
     true_positive = (hard_prediction & hard_target).sum(dtype=torch.float32)
     false_positive = (hard_prediction & ~hard_target).sum(dtype=torch.float32)
     false_negative = (~hard_prediction & hard_target).sum(dtype=torch.float32)
@@ -208,27 +255,32 @@ def separation_metric_tensors(
     pixel_accuracy = (true_positive + true_negative) / hard_target.numel()
 
     per_spot_soft_dice = soft_dice_per_sample(prediction, target)
-    reconstruction = prediction.sum(dim=1, keepdim=True)
+    per_spot_mask_dice = soft_dice_per_sample(mask_prediction, mask_target)
 
     return {
         "loss_total": loss_parts["total"],
         "loss_dice": loss_parts["dice"],
         "loss_intensity": loss_parts["intensity"],
+        "loss_mask_bce": loss_parts["mask_bce"],
+        "loss_mask_dice": loss_parts["mask_dice"],
+        "loss_wrong_spot": loss_parts["wrong_spot"],
+        "loss_reconstruction": loss_parts["reconstruction"],
+        "loss_outside_mask": loss_parts["outside_mask"],
         "loss_background": loss_parts["background"],
-        "soft_dice": soft_dice_per_sample(first_spot_prediction, first_spot_target).mean(),
+        "soft_dice": per_spot_soft_dice.mean(),
         "soft_dice_spot_1": per_spot_soft_dice[:, 0].mean(),
         "soft_dice_spot_2": per_spot_soft_dice[:, 1].mean(),
-        "two_spot_soft_dice": per_spot_soft_dice.mean(),
-        "mae": first_spot_error.mean(),
-        "rmse": first_spot_squared_error.mean().sqrt(),
-        "two_spot_mae": two_spot_absolute_error.mean(),
-        "two_spot_rmse": two_spot_squared_error.mean().sqrt(),
-        "foreground_mae": first_spot_error[foreground].mean() if foreground.any() else first_spot_error.new_tensor(0.0),
-        "background_mae": first_spot_error[background].mean() if background.any() else first_spot_error.new_tensor(0.0),
-        "spot_1_mae": two_spot_absolute_error[:, 0].mean(),
-        "spot_2_mae": two_spot_absolute_error[:, 1].mean(),
-        "spot_1_rmse": two_spot_squared_error[:, 0].mean().sqrt(),
-        "spot_2_rmse": two_spot_squared_error[:, 1].mean().sqrt(),
+        "mask_soft_dice": per_spot_mask_dice.mean(),
+        "mask_soft_dice_spot_1": per_spot_mask_dice[:, 0].mean(),
+        "mask_soft_dice_spot_2": per_spot_mask_dice[:, 1].mean(),
+        "mae": absolute_error.mean(),
+        "rmse": squared_error.mean().sqrt(),
+        "foreground_mae": absolute_error[foreground].mean() if foreground.any() else absolute_error.new_tensor(0.0),
+        "background_mae": absolute_error[background].mean() if background.any() else absolute_error.new_tensor(0.0),
+        "spot_1_mae": absolute_error[:, 0].mean(),
+        "spot_2_mae": absolute_error[:, 1].mean(),
+        "spot_1_rmse": squared_error[:, 0].mean().sqrt(),
+        "spot_2_rmse": squared_error[:, 1].mean().sqrt(),
         "reconstruction_mae": (reconstruction - image).abs().mean(),
         "reconstruction_rmse": (reconstruction - image).square().mean().sqrt(),
         "precision": precision,
@@ -238,10 +290,10 @@ def separation_metric_tensors(
         "pixel_accuracy": pixel_accuracy,
         "predicted_foreground_fraction": hard_prediction.float().mean(),
         "target_foreground_fraction": hard_target.float().mean(),
-        "prediction_mean": first_spot_prediction.mean(),
-        "target_mean": first_spot_target.mean(),
-        "prediction_sum": first_spot_prediction.sum(),
-        "target_sum": first_spot_target.sum(),
+        "prediction_mean": prediction.mean(),
+        "target_mean": target.mean(),
+        "prediction_sum": prediction.sum(),
+        "target_sum": target.sum(),
     }
 
 
@@ -264,11 +316,12 @@ def log_metrics(writer: SummaryWriter, prefix: str, metrics: dict[str, float], s
 
 
 def separation_loss(
-    first_spot_prediction: torch.Tensor,
+    outputs: dict[str, torch.Tensor],
     target: torch.Tensor,
+    mask_target: torch.Tensor,
     image: torch.Tensor,
 ) -> torch.Tensor:
-    return separation_loss_components(first_spot_prediction, target, image)["total"]
+    return separation_loss_components(outputs, target, mask_target, image)["total"]
 
 
 def evaluate(model, dataloader, device, amp):
@@ -279,6 +332,7 @@ def evaluate(model, dataloader, device, amp):
         for batch in dataloader:
             images = batch["image"].to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
             targets = batch["target"].to(device=device, dtype=torch.float32)
+            masks = batch["mask"].to(device=device, dtype=torch.float32)
 
             with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
                 logits = model(images)
@@ -286,8 +340,8 @@ def evaluate(model, dataloader, device, amp):
                     logits = F.interpolate(
                         logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                     )
-                prediction = spot_intensity_prediction(logits, images)
-                metric_dicts.append(metrics_to_floats(separation_metric_tensors(prediction, targets, images)))
+                outputs = spot_separation_prediction(logits, images)
+                metric_dicts.append(metrics_to_floats(separation_metric_tensors(outputs, targets, masks, images)))
 
     model.train()
     return average_metric_dicts(metric_dicts)
@@ -314,13 +368,15 @@ def save_prediction_previews(
         for batch in dataloader:
             images = batch["image"].to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
             targets = batch["target"].to(device=device, dtype=torch.float32)
+            masks = batch["mask"].to(device=device, dtype=torch.float32)
 
             with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
                 logits = model(images)
                 if logits.shape[2:] != targets.shape[2:]:
                     logits = F.interpolate(logits, size=targets.shape[2:], mode="bilinear", align_corners=False)
-                first_spot_predictions = spot_intensity_prediction(logits, images)
-                predictions = compose_spot_predictions(first_spot_predictions, images)
+                outputs = spot_separation_prediction(logits, images)
+                predictions = outputs["intensities"]
+                mask_predictions = outputs["masks"]
 
             batch_size = images.shape[0]
             for sample_idx in range(batch_size):
@@ -331,11 +387,12 @@ def save_prediction_previews(
                 image = images[sample_idx, 0].detach().cpu().numpy()
                 true_spots = targets[sample_idx].detach().cpu().numpy()
                 pred_spots = predictions[sample_idx].detach().cpu().numpy()
+                true_masks = masks[sample_idx].detach().cpu().numpy()
+                pred_masks = mask_predictions[sample_idx].detach().cpu().numpy()
                 true_sum = true_spots.sum(axis=0)
                 pred_sum = pred_spots.sum(axis=0)
-                residual_error = np.abs(pred_spots[1] - true_spots[1])
 
-                fig, axes = plt.subplots(2, 4, figsize=(12, 6), constrained_layout=True)
+                fig, axes = plt.subplots(4, 4, figsize=(12, 12), constrained_layout=True)
                 panels = [
                     (image, "input", "gray", 0.0, 1.0),
                     (true_spots[0], "true spot 1", "gray", 0.0, 1.0),
@@ -343,8 +400,16 @@ def save_prediction_previews(
                     (np.abs(pred_spots[0] - true_spots[0]), "error spot 1", "magma", 0.0, 1.0),
                     (true_sum, "true sum", "gray", 0.0, 1.0),
                     (true_spots[1], "true spot 2", "gray", 0.0, 1.0),
-                    (pred_spots[1], "residual spot 2", "gray", 0.0, 1.0),
-                    (residual_error, "error spot 2", "magma", 0.0, 1.0),
+                    (pred_spots[1], "pred spot 2", "gray", 0.0, 1.0),
+                    (np.abs(pred_spots[1] - true_spots[1]), "error spot 2", "magma", 0.0, 1.0),
+                    (pred_sum, "pred sum", "gray", 0.0, 1.0),
+                    (true_masks[0], "true mask 1", "gray", 0.0, 1.0),
+                    (pred_masks[0], "pred mask 1", "gray", 0.0, 1.0),
+                    (np.abs(pred_masks[0] - true_masks[0]), "mask error 1", "magma", 0.0, 1.0),
+                    (np.abs(pred_sum - image), "recon error", "magma", 0.0, 1.0),
+                    (true_masks[1], "true mask 2", "gray", 0.0, 1.0),
+                    (pred_masks[1], "pred mask 2", "gray", 0.0, 1.0),
+                    (np.abs(pred_masks[1] - true_masks[1]), "mask error 2", "magma", 0.0, 1.0),
                 ]
                 for axis, (data, title, cmap, vmin, vmax) in zip(axes.flat, panels):
                     axis.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
@@ -417,7 +482,7 @@ def train_model(
             "run_name": run_name,
             "preview_samples": preview_samples,
             "optimizer": "AdamW",
-            "loss": "first_spot_soft_dice+0.25_first_spot_foreground_l1+0.01_background",
+            "loss": "mask_dice+foreground_weighted_mask_bce+2.0_wrong_spot",
         },
         {"hparam/metric": 0},
     )
@@ -464,6 +529,7 @@ def train_model(
             for batch in train_loader:
                 images = batch["image"]
                 targets = batch["target"].to(device=device, dtype=torch.float32)
+                masks = batch["mask"].to(device=device, dtype=torch.float32)
 
                 assert images.shape[1] == model.n_channels, (
                     f"Network has {model.n_channels} input channels, "
@@ -478,8 +544,9 @@ def train_model(
                         logits = F.interpolate(
                             logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                         )
-                    predictions = spot_intensity_prediction(logits, images)
-                    loss_parts = separation_loss_components(predictions, targets, images)
+                    outputs = spot_separation_prediction(logits, images)
+                    predictions = outputs["intensities"]
+                    loss_parts = separation_loss_components(outputs, targets, masks, images)
                     loss = loss_parts["total"]
 
                 optimizer.zero_grad(set_to_none=True)
@@ -492,12 +559,17 @@ def train_model(
                 pbar.update(images.shape[0])
                 global_step += 1
                 with torch.no_grad():
-                    batch_metrics = metrics_to_floats(separation_metric_tensors(predictions, targets, images))
+                    batch_metrics = metrics_to_floats(separation_metric_tensors(outputs, targets, masks, images))
                 train_epoch_metrics.append(batch_metrics)
                 log_metrics(writer, "train_batch", batch_metrics, global_step)
                 writer.add_scalar("Loss/train_batch", batch_metrics["loss_total"], global_step)
                 writer.add_scalar("Loss_parts/train_dice", batch_metrics["loss_dice"], global_step)
                 writer.add_scalar("Loss_parts/train_intensity", batch_metrics["loss_intensity"], global_step)
+                writer.add_scalar("Loss_parts/train_mask_bce", batch_metrics["loss_mask_bce"], global_step)
+                writer.add_scalar("Loss_parts/train_mask_dice", batch_metrics["loss_mask_dice"], global_step)
+                writer.add_scalar("Loss_parts/train_wrong_spot", batch_metrics["loss_wrong_spot"], global_step)
+                writer.add_scalar("Loss_parts/train_reconstruction", batch_metrics["loss_reconstruction"], global_step)
+                writer.add_scalar("Loss_parts/train_outside_mask", batch_metrics["loss_outside_mask"], global_step)
                 writer.add_scalar("Loss_parts/train_background", batch_metrics["loss_background"], global_step)
                 pbar.set_postfix(**{"loss (batch)": batch_metrics["loss_total"]})
 
@@ -521,9 +593,12 @@ def train_model(
                     writer.add_image("input_images", images[0], global_step)
                     writer.add_image("spots/true_1", targets[0, 0:1].float(), global_step)
                     writer.add_image("spots/true_2", targets[0, 1:2].float(), global_step)
-                    preview_predictions = compose_spot_predictions(predictions[:1], images[:1])
-                    writer.add_image("spots/pred_1", preview_predictions[0, 0:1].float(), global_step)
-                    writer.add_image("spots/residual_pred_2", preview_predictions[0, 1:2].float(), global_step)
+                    writer.add_image("spots/pred_1", predictions[0, 0:1].float(), global_step)
+                    writer.add_image("spots/pred_2", predictions[0, 1:2].float(), global_step)
+                    writer.add_image("masks/true_1", masks[0, 0:1].float(), global_step)
+                    writer.add_image("masks/true_2", masks[0, 1:2].float(), global_step)
+                    writer.add_image("masks/pred_1", outputs["masks"][0, 0:1].float(), global_step)
+                    writer.add_image("masks/pred_2", outputs["masks"][0, 1:2].float(), global_step)
 
         train_metrics = average_metric_dicts(train_epoch_metrics)
         val_metrics = evaluate(model, val_loader, device, amp)
@@ -586,11 +661,11 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info("Using device %s", device)
 
-    model = UNet(n_channels=1, n_classes=1, bilinear=args.bilinear)
+    model = UNet(n_channels=1, n_classes=4, bilinear=args.bilinear)
     model = model.to(memory_format=torch.channels_last)
 
     logging.info(
-        "Network: %d input channel, %d output channel, %s upscaling",
+        "Network: %d input channel, %d output channels, %s upscaling",
         model.n_channels,
         model.n_classes,
         "Bilinear" if model.bilinear else "Transposed conv",
