@@ -21,7 +21,9 @@ from unet_model import UNet
 
 
 dir_checkpoint = Path("./checkpoints/")
-dir_h5_spot_segmentation = Path("./data/augmented_spot_patches.h5")
+dir_h5_spot_segmentation = (
+    Path(__file__).resolve().parent.parent / "data_esrf" / "augmented_spots_train.h5"
+)
 dir_runs = Path("./runs/")
 dir_previews = Path("./prediction_previews/")
 
@@ -56,28 +58,28 @@ class H5SpotSeparationDataset(Dataset):
 
     @staticmethod
     def normalize_image_and_targets(image: np.ndarray, targets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Normalize both targets together and reconstruct their exact additive input."""
         image = image.astype(np.float32, copy=False)
         targets = targets.astype(np.float32, copy=False)
-        finite = np.isfinite(image)
-        if not finite.any():
+        finite_image = np.isfinite(image)
+        if not finite_image.any():
             return np.zeros_like(image, dtype=np.float32), np.zeros_like(targets, dtype=np.float32)
 
-        values = image[finite]
-        lo, hi = np.percentile(values, [1, 99.9])
-        if hi <= lo:
-            lo = float(values.min())
-            hi = float(values.max())
-        if hi <= lo:
+        clean_image = np.where(finite_image, image, 0.0)
+        clean_targets = np.where(np.isfinite(targets), targets, 0.0)
+        np.maximum(clean_targets, 0.0, out=clean_targets)
+        positive_values = clean_image[clean_image > 0]
+        if positive_values.size == 0:
+            return np.zeros_like(image, dtype=np.float32), np.zeros_like(targets, dtype=np.float32)
+        high = float(np.percentile(positive_values, 99.9))
+        if high <= 0:
+            high = float(positive_values.max())
+        if high <= 0:
             return np.zeros_like(image, dtype=np.float32), np.zeros_like(targets, dtype=np.float32)
 
-        image = np.clip(image, lo, hi)
-        image = (image - lo) / (hi - lo)
-        image[~finite] = 0.0
-
-        targets = np.clip(targets, lo, hi)
-        targets = (targets - lo) / (hi - lo)
-        targets[~np.isfinite(targets)] = 0.0
-        return image.astype(np.float32, copy=False), targets.astype(np.float32, copy=False)
+        normalized_targets = np.clip(clean_targets, 0.0, high) / high
+        normalized_image = normalized_targets.sum(axis=0, dtype=np.float32)
+        return normalized_image.astype(np.float32, copy=False), normalized_targets.astype(np.float32, copy=False)
 
     def __getitem__(self, idx):
         sample_name = self.sample_names[idx]
@@ -129,46 +131,25 @@ def soft_dice_per_sample(
     return numerator / denominator
 
 
-def soft_dice_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    return 1.0 - soft_dice_per_sample(prediction, target).mean()
-
-
-def foreground_weighted_l1_loss(
+def single_spot_loss_per_sample(
     prediction: torch.Tensor,
-    target: torch.Tensor,
+    spot_target: torch.Tensor,
     foreground_weight: float = 8.0,
     foreground_threshold: float = 1e-4,
-) -> torch.Tensor:
-    error = (prediction - target).abs()
-    foreground = (target > foreground_threshold).to(dtype=error.dtype)
-    weights = 1.0 + foreground_weight * foreground
-    return (error * weights).sum() / weights.sum().clamp_min(1.0)
-
-
-def background_l1_loss(
-    prediction: torch.Tensor,
-    image: torch.Tensor,
-    background_threshold: float = 1e-4,
-) -> torch.Tensor:
-    background = (image <= background_threshold).to(dtype=prediction.dtype)
-    denominator = (background.sum() * prediction.shape[1]).clamp_min(1.0)
-    return (prediction.abs() * background).sum() / denominator
-
-
-def separation_loss_components(
-    first_spot_prediction: torch.Tensor,
-    target: torch.Tensor,
-    image: torch.Tensor,
-    foreground_weight: float = 8.0,
 ) -> dict[str, torch.Tensor]:
-    first_spot_target = target[:, 0:1]
-    dice = soft_dice_loss(first_spot_prediction, first_spot_target)
-    intensity = foreground_weighted_l1_loss(
-        first_spot_prediction,
-        first_spot_target,
-        foreground_weight=foreground_weight,
-    )
-    background = background_l1_loss(first_spot_prediction, image)
+    """Loss vectors for one prediction against one candidate ground-truth spot."""
+    dice = 1.0 - soft_dice_per_sample(prediction, spot_target).mean(dim=1)
+
+    error = (prediction - spot_target).abs()
+    foreground = (spot_target > foreground_threshold).to(dtype=error.dtype)
+    weights = 1.0 + foreground_weight * foreground
+    intensity = (error * weights).sum(dim=(1, 2, 3)) / weights.sum(dim=(1, 2, 3)).clamp_min(1.0)
+
+    # Unlike input-background loss, this also penalizes assigning the other spot to this output.
+    target_background = (spot_target <= foreground_threshold).to(dtype=prediction.dtype)
+    background = (prediction.abs() * target_background).sum(dim=(1, 2, 3)) / target_background.sum(
+        dim=(1, 2, 3)
+    ).clamp_min(1.0)
     total = dice + 0.25 * intensity + 0.01 * background
     return {
         "total": total,
@@ -178,19 +159,64 @@ def separation_loss_components(
     }
 
 
+def selected_target_is_second(
+    first_spot_prediction: torch.Tensor,
+    target: torch.Tensor,
+    foreground_weight: float = 8.0,
+) -> torch.Tensor:
+    first = single_spot_loss_per_sample(
+        first_spot_prediction, target[:, 0:1], foreground_weight=foreground_weight
+    )
+    second = single_spot_loss_per_sample(
+        first_spot_prediction, target[:, 1:2], foreground_weight=foreground_weight
+    )
+    return second["total"] < first["total"]
+
+
+def align_spot_targets(first_spot_prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Put the selected one-spot target first and the residual target second."""
+    use_second = selected_target_is_second(first_spot_prediction, target)
+    aligned = target.clone()
+    aligned[use_second] = target[use_second].flip(1)
+    return aligned
+
+
+def separation_loss_components(
+    first_spot_prediction: torch.Tensor,
+    target: torch.Tensor,
+    image: torch.Tensor,
+    foreground_weight: float = 8.0,
+) -> dict[str, torch.Tensor]:
+    del image  # The loss supervises one selected spot only; the other output is a residual.
+    first = single_spot_loss_per_sample(
+        first_spot_prediction, target[:, 0:1], foreground_weight=foreground_weight
+    )
+    second = single_spot_loss_per_sample(
+        first_spot_prediction, target[:, 1:2], foreground_weight=foreground_weight
+    )
+    use_second = second["total"] < first["total"]
+
+    selected = {
+        name: torch.where(use_second, second[name], first[name]).mean()
+        for name in first
+    }
+    return selected
+
+
 def separation_metric_tensors(
     first_spot_prediction: torch.Tensor,
     target: torch.Tensor,
     image: torch.Tensor,
     threshold: float = 1e-4,
 ) -> dict[str, torch.Tensor]:
+    aligned_target = align_spot_targets(first_spot_prediction, target)
     prediction = compose_spot_predictions(first_spot_prediction, image)
     loss_parts = separation_loss_components(first_spot_prediction, target, image)
-    first_spot_target = target[:, 0:1]
+    first_spot_target = aligned_target[:, 0:1]
     first_spot_error = (first_spot_prediction - first_spot_target).abs()
     first_spot_squared_error = (first_spot_prediction - first_spot_target).square()
-    two_spot_absolute_error = (prediction - target).abs()
-    two_spot_squared_error = (prediction - target).square()
+    two_spot_absolute_error = (prediction - aligned_target).abs()
+    two_spot_squared_error = (prediction - aligned_target).square()
     foreground = first_spot_target > threshold
     background = ~foreground
 
@@ -321,6 +347,7 @@ def save_prediction_previews(
                     logits = F.interpolate(logits, size=targets.shape[2:], mode="bilinear", align_corners=False)
                 first_spot_predictions = spot_intensity_prediction(logits, images)
                 predictions = compose_spot_predictions(first_spot_predictions, images)
+                targets = align_spot_targets(first_spot_predictions, targets)
 
             batch_size = images.shape[0]
             for sample_idx in range(batch_size):
@@ -417,7 +444,7 @@ def train_model(
             "run_name": run_name,
             "preview_samples": preview_samples,
             "optimizer": "AdamW",
-            "loss": "first_spot_soft_dice+0.25_first_spot_foreground_l1+0.01_background",
+            "loss": "PI_one_spot_dice+0.25_foreground_l1+0.01_target_background",
         },
         {"hparam/metric": 0},
     )
@@ -519,8 +546,9 @@ def train_model(
                     writer.add_scalar("Loss/validation_step", val_score, global_step)
                     log_metrics(writer, "validation_step", val_metrics, global_step)
                     writer.add_image("input_images", images[0], global_step)
-                    writer.add_image("spots/true_1", targets[0, 0:1].float(), global_step)
-                    writer.add_image("spots/true_2", targets[0, 1:2].float(), global_step)
+                    preview_targets = align_spot_targets(predictions[:1], targets[:1])
+                    writer.add_image("spots/true_1", preview_targets[0, 0:1].float(), global_step)
+                    writer.add_image("spots/true_2", preview_targets[0, 1:2].float(), global_step)
                     preview_predictions = compose_spot_predictions(predictions[:1], images[:1])
                     writer.add_image("spots/pred_1", preview_predictions[0, 0:1].float(), global_step)
                     writer.add_image("spots/residual_pred_2", preview_predictions[0, 1:2].float(), global_step)
