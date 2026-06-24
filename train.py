@@ -121,23 +121,19 @@ class H5SpotSeparationDataset(Dataset):
         return {"image": image_tensor, "target": target_tensor, "mask": mask_tensor}
 
 
-def spot_separation_prediction(logits: torch.Tensor, image: torch.Tensor) -> dict[str, torch.Tensor]:
+def spot_separation_prediction(logits: torch.Tensor) -> dict[str, torch.Tensor]:
     if logits.shape[1] != 4:
         raise ValueError(f"Expected 4 output channels, got {logits.shape[1]}")
 
     mask_logits = logits[:, 0:2]
-    fraction_logits = logits[:, 2:4]
+    intensity_logits = logits[:, 2:4]
     masks = torch.sigmoid(mask_logits)
-    fractions = torch.softmax(fraction_logits, dim=1)
-    intensities = fractions * image
-    reconstruction = intensities.sum(dim=1, keepdim=True)
+    intensities = torch.sigmoid(intensity_logits)
     return {
         "mask_logits": mask_logits,
-        "fraction_logits": fraction_logits,
+        "intensity_logits": intensity_logits,
         "masks": masks,
-        "fractions": fractions,
         "intensities": intensities,
-        "reconstruction": reconstruction,
     }
 
 
@@ -151,76 +147,78 @@ def soft_dice_per_sample(
     return numerator / denominator
 
 
-def soft_dice_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    return 1.0 - soft_dice_per_sample(prediction, target).mean()
-
-
-def foreground_weighted_l1_loss(
+def masked_l1_loss_per_spot(
     prediction: torch.Tensor,
     target: torch.Tensor,
-    foreground_weight: float = 8.0,
-    foreground_threshold: float = 1e-4,
+    mask_target: torch.Tensor,
 ) -> torch.Tensor:
-    error = (prediction - target).abs()
-    foreground = (target > foreground_threshold).to(dtype=error.dtype)
-    weights = 1.0 + foreground_weight * foreground
-    return (error * weights).sum() / weights.sum().clamp_min(1.0)
+    """Mean foreground intensity error for each of the two matched spots."""
+    foreground = (mask_target > 0.5).to(dtype=prediction.dtype)
+    error = (prediction - target).abs() * foreground
+    return error.sum(dim=(0, 2, 3)) / foreground.sum(dim=(0, 2, 3)).clamp_min(1.0)
 
 
 def background_l1_loss(
     prediction: torch.Tensor,
-    image: torch.Tensor,
-    background_threshold: float = 1e-4,
+    mask_target: torch.Tensor,
 ) -> torch.Tensor:
-    background = (image <= background_threshold).to(dtype=prediction.dtype)
-    denominator = (background.sum() * prediction.shape[1]).clamp_min(1.0)
-    return (prediction.abs() * background).sum() / denominator
+    """Mean predicted intensity outside the corresponding ground-truth spot mask."""
+    background = (mask_target <= 0.5).to(dtype=prediction.dtype)
+    return (prediction.abs() * background).sum() / background.sum().clamp_min(1.0)
+
+
+def matched_mask_loss_per_spot(
+    mask_logits: torch.Tensor,
+    mask_prediction: torch.Tensor,
+    mask_target: torch.Tensor,
+    background_weight: float = 0.05,
+) -> torch.Tensor:
+    """Dice + foreground-weighted BCE, independently for each matched spot."""
+    dice_per_spot = 1.0 - soft_dice_per_sample(mask_prediction, mask_target).mean(dim=0)
+    bce = F.binary_cross_entropy_with_logits(mask_logits, mask_target, reduction="none")
+    weights = torch.where(
+        mask_target > 0.5,
+        torch.ones_like(mask_target),
+        torch.full_like(mask_target, background_weight),
+    )
+    weighted_bce_per_spot = (bce * weights).sum(dim=(0, 2, 3)) / weights.sum(
+        dim=(0, 2, 3)
+    ).clamp_min(1e-6)
+    return dice_per_spot + weighted_bce_per_spot
 
 
 def separation_loss_components(
     outputs: dict[str, torch.Tensor],
     target: torch.Tensor,
     mask_target: torch.Tensor,
-    image: torch.Tensor,
-    background_weight: float = 0.05,
-    wrong_spot_weight: float = 2.0,
+    background_loss_weight: float = 0.2,
+    mask_bce_background_weight: float = 0.05,
 ) -> dict[str, torch.Tensor]:
     prediction = outputs["intensities"]
     mask_prediction = outputs["masks"]
     mask_logits = outputs["mask_logits"]
-    reconstruction = outputs["reconstruction"]
 
-    dice = soft_dice_loss(mask_prediction, mask_target)
-    intensity = foreground_weighted_l1_loss(
-        prediction,
-        target,
+    mask_losses = matched_mask_loss_per_spot(
+        mask_logits,
+        mask_prediction,
+        mask_target,
+        background_weight=mask_bce_background_weight,
     )
-    mask_bce_per_pixel = F.binary_cross_entropy_with_logits(mask_logits, mask_target, reduction="none")
-    bce_weights = torch.where(
-        mask_target > 0.5,
-        torch.ones_like(mask_target),
-        torch.full_like(mask_target, background_weight),
+    intensity_losses = masked_l1_loss_per_spot(prediction, target, mask_target)
+    background = background_l1_loss(prediction, mask_target)
+    total = (
+        mask_losses[0]
+        + mask_losses[1]
+        + intensity_losses[0]
+        + intensity_losses[1]
+        + background_loss_weight * background
     )
-    mask_bce = (mask_bce_per_pixel * bce_weights).sum() / bce_weights.sum().clamp_min(1e-6)
-
-    wrong_spot_1 = mask_prediction[:, 0] * mask_target[:, 1] * (1.0 - mask_target[:, 0])
-    wrong_spot_2 = mask_prediction[:, 1] * mask_target[:, 0] * (1.0 - mask_target[:, 1])
-    wrong_spot = wrong_spot_1.mean() + wrong_spot_2.mean()
-
-    mask_dice = dice
-    reconstruction_loss = (reconstruction - image).abs().mean()
-    outside_mask = (prediction * (1.0 - mask_target)).abs().mean()
-    background = background_l1_loss(prediction, image)
-    total = dice + mask_bce + wrong_spot_weight * wrong_spot
     return {
         "total": total,
-        "dice": dice,
-        "intensity": intensity,
-        "mask_bce": mask_bce,
-        "mask_dice": mask_dice,
-        "wrong_spot": wrong_spot,
-        "reconstruction": reconstruction_loss,
-        "outside_mask": outside_mask,
+        "mask_1": mask_losses[0],
+        "mask_2": mask_losses[1],
+        "intensity_1": intensity_losses[0],
+        "intensity_2": intensity_losses[1],
         "background": background,
     }
 
@@ -229,71 +227,20 @@ def separation_metric_tensors(
     outputs: dict[str, torch.Tensor],
     target: torch.Tensor,
     mask_target: torch.Tensor,
-    image: torch.Tensor,
-    mask_threshold: float = 0.5,
 ) -> dict[str, torch.Tensor]:
-    prediction = outputs["intensities"]
     mask_prediction = outputs["masks"]
-    reconstruction = outputs["reconstruction"]
-    loss_parts = separation_loss_components(outputs, target, mask_target, image)
-    absolute_error = (prediction - target).abs()
-    squared_error = (prediction - target).square()
-    foreground = mask_target > 0.5
-    background = ~foreground
-
-    hard_prediction = mask_prediction > mask_threshold
-    hard_target = mask_target > 0.5
-    true_positive = (hard_prediction & hard_target).sum(dtype=torch.float32)
-    false_positive = (hard_prediction & ~hard_target).sum(dtype=torch.float32)
-    false_negative = (~hard_prediction & hard_target).sum(dtype=torch.float32)
-    true_negative = (~hard_prediction & ~hard_target).sum(dtype=torch.float32)
-
-    precision = true_positive / (true_positive + false_positive).clamp_min(1.0)
-    recall = true_positive / (true_positive + false_negative).clamp_min(1.0)
-    f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1e-8)
-    iou = true_positive / (true_positive + false_positive + false_negative).clamp_min(1.0)
-    pixel_accuracy = (true_positive + true_negative) / hard_target.numel()
-
-    per_spot_soft_dice = soft_dice_per_sample(prediction, target)
+    loss_parts = separation_loss_components(outputs, target, mask_target)
     per_spot_mask_dice = soft_dice_per_sample(mask_prediction, mask_target)
 
     return {
         "loss_total": loss_parts["total"],
-        "loss_dice": loss_parts["dice"],
-        "loss_intensity": loss_parts["intensity"],
-        "loss_mask_bce": loss_parts["mask_bce"],
-        "loss_mask_dice": loss_parts["mask_dice"],
-        "loss_wrong_spot": loss_parts["wrong_spot"],
-        "loss_reconstruction": loss_parts["reconstruction"],
-        "loss_outside_mask": loss_parts["outside_mask"],
+        "loss_mask_1": loss_parts["mask_1"],
+        "loss_mask_2": loss_parts["mask_2"],
+        "loss_intensity_1": loss_parts["intensity_1"],
+        "loss_intensity_2": loss_parts["intensity_2"],
         "loss_background": loss_parts["background"],
-        "soft_dice": per_spot_soft_dice.mean(),
-        "soft_dice_spot_1": per_spot_soft_dice[:, 0].mean(),
-        "soft_dice_spot_2": per_spot_soft_dice[:, 1].mean(),
-        "mask_soft_dice": per_spot_mask_dice.mean(),
         "mask_soft_dice_spot_1": per_spot_mask_dice[:, 0].mean(),
         "mask_soft_dice_spot_2": per_spot_mask_dice[:, 1].mean(),
-        "mae": absolute_error.mean(),
-        "rmse": squared_error.mean().sqrt(),
-        "foreground_mae": absolute_error[foreground].mean() if foreground.any() else absolute_error.new_tensor(0.0),
-        "background_mae": absolute_error[background].mean() if background.any() else absolute_error.new_tensor(0.0),
-        "spot_1_mae": absolute_error[:, 0].mean(),
-        "spot_2_mae": absolute_error[:, 1].mean(),
-        "spot_1_rmse": squared_error[:, 0].mean().sqrt(),
-        "spot_2_rmse": squared_error[:, 1].mean().sqrt(),
-        "reconstruction_mae": (reconstruction - image).abs().mean(),
-        "reconstruction_rmse": (reconstruction - image).square().mean().sqrt(),
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-        "iou": iou,
-        "pixel_accuracy": pixel_accuracy,
-        "predicted_foreground_fraction": hard_prediction.float().mean(),
-        "target_foreground_fraction": hard_target.float().mean(),
-        "prediction_mean": prediction.mean(),
-        "target_mean": target.mean(),
-        "prediction_sum": prediction.sum(),
-        "target_sum": target.sum(),
     }
 
 
@@ -319,9 +266,8 @@ def separation_loss(
     outputs: dict[str, torch.Tensor],
     target: torch.Tensor,
     mask_target: torch.Tensor,
-    image: torch.Tensor,
 ) -> torch.Tensor:
-    return separation_loss_components(outputs, target, mask_target, image)["total"]
+    return separation_loss_components(outputs, target, mask_target)["total"]
 
 
 def evaluate(model, dataloader, device, amp):
@@ -340,8 +286,8 @@ def evaluate(model, dataloader, device, amp):
                     logits = F.interpolate(
                         logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                     )
-                outputs = spot_separation_prediction(logits, images)
-                metric_dicts.append(metrics_to_floats(separation_metric_tensors(outputs, targets, masks, images)))
+                outputs = spot_separation_prediction(logits)
+                metric_dicts.append(metrics_to_floats(separation_metric_tensors(outputs, targets, masks)))
 
     model.train()
     return average_metric_dicts(metric_dicts)
@@ -374,7 +320,7 @@ def save_prediction_previews(
                 logits = model(images)
                 if logits.shape[2:] != targets.shape[2:]:
                     logits = F.interpolate(logits, size=targets.shape[2:], mode="bilinear", align_corners=False)
-                outputs = spot_separation_prediction(logits, images)
+                outputs = spot_separation_prediction(logits)
                 predictions = outputs["intensities"]
                 mask_predictions = outputs["masks"]
 
@@ -482,7 +428,7 @@ def train_model(
             "run_name": run_name,
             "preview_samples": preview_samples,
             "optimizer": "AdamW",
-            "loss": "mask_dice+foreground_weighted_mask_bce+2.0_wrong_spot",
+            "loss": "mask_1+mask_2+intensity_1+intensity_2+0.2_background",
         },
         {"hparam/metric": 0},
     )
@@ -544,9 +490,9 @@ def train_model(
                         logits = F.interpolate(
                             logits, size=targets.shape[2:], mode="bilinear", align_corners=False
                         )
-                    outputs = spot_separation_prediction(logits, images)
+                    outputs = spot_separation_prediction(logits)
                     predictions = outputs["intensities"]
-                    loss_parts = separation_loss_components(outputs, targets, masks, images)
+                    loss_parts = separation_loss_components(outputs, targets, masks)
                     loss = loss_parts["total"]
 
                 optimizer.zero_grad(set_to_none=True)
@@ -559,18 +505,10 @@ def train_model(
                 pbar.update(images.shape[0])
                 global_step += 1
                 with torch.no_grad():
-                    batch_metrics = metrics_to_floats(separation_metric_tensors(outputs, targets, masks, images))
+                    batch_metrics = metrics_to_floats(separation_metric_tensors(outputs, targets, masks))
                 train_epoch_metrics.append(batch_metrics)
                 log_metrics(writer, "train_batch", batch_metrics, global_step)
                 writer.add_scalar("Loss/train_batch", batch_metrics["loss_total"], global_step)
-                writer.add_scalar("Loss_parts/train_dice", batch_metrics["loss_dice"], global_step)
-                writer.add_scalar("Loss_parts/train_intensity", batch_metrics["loss_intensity"], global_step)
-                writer.add_scalar("Loss_parts/train_mask_bce", batch_metrics["loss_mask_bce"], global_step)
-                writer.add_scalar("Loss_parts/train_mask_dice", batch_metrics["loss_mask_dice"], global_step)
-                writer.add_scalar("Loss_parts/train_wrong_spot", batch_metrics["loss_wrong_spot"], global_step)
-                writer.add_scalar("Loss_parts/train_reconstruction", batch_metrics["loss_reconstruction"], global_step)
-                writer.add_scalar("Loss_parts/train_outside_mask", batch_metrics["loss_outside_mask"], global_step)
-                writer.add_scalar("Loss_parts/train_background", batch_metrics["loss_background"], global_step)
                 pbar.set_postfix(**{"loss (batch)": batch_metrics["loss_total"]})
 
                 division_step = n_train // (5 * batch_size)
