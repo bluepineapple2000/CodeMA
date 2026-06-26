@@ -1,6 +1,11 @@
 import argparse
+import atexit
+import json
 import logging
 import os
+import signal
+import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +31,73 @@ dir_h5_spot_segmentation = (
 )
 dir_runs = Path("./runs/")
 dir_previews = Path("./prediction_previews/")
+dir_debug = Path("./debug_logs/")
+
+
+class TrainingDebugRecorder:
+    """Writes a small heartbeat file with the latest known training position."""
+
+    def __init__(self, state_file: Path):
+        self.state_file = Path(state_file)
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state = {
+            "status": "starting",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "pid": os.getpid(),
+        }
+        self.update(phase="process_started")
+
+    def update(self, **kwargs) -> None:
+        self.state.update(kwargs)
+        self.state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        tmp_file = self.state_file.with_suffix(self.state_file.suffix + ".tmp")
+        tmp_file.write_text(json.dumps(self.state, indent=2, sort_keys=True) + "\n")
+        tmp_file.replace(self.state_file)
+
+    def record_exception(self, exc: BaseException) -> None:
+        self.update(
+            status="crashed",
+            phase="exception",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
+
+
+def setup_logging(debug_dir: Path) -> tuple[Path, Path, TrainingDebugRecorder]:
+    debug_dir = Path(debug_dir)
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    debug_log_file = debug_dir / f"train_debug_{timestamp}.log"
+    state_file = debug_dir / "train_state.json"
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(debug_log_file, mode="w"),
+        ],
+        force=True,
+    )
+
+    recorder = TrainingDebugRecorder(state_file)
+    logging.info("Debug log file: %s", debug_log_file)
+    logging.info("Training state heartbeat file: %s", state_file)
+    atexit.register(lambda: logging.info("Python process exiting"))
+    return debug_log_file, state_file, recorder
+
+
+def install_signal_logging(debug_recorder: TrainingDebugRecorder) -> None:
+    def _handler(signum, _frame):
+        signal_name = signal.Signals(signum).name
+        logging.error("Received %s; writing debug state before exit.", signal_name)
+        debug_recorder.update(status="stopped_by_signal", phase="signal", signal=signal_name)
+        raise SystemExit(128 + signum)
+
+    for signal_name in ("SIGTERM", "SIGINT"):
+        if hasattr(signal, signal_name):
+            signal.signal(getattr(signal, signal_name), _handler)
 
 
 class H5SpotSeparationDataset(Dataset):
@@ -409,11 +481,21 @@ def train_model(
     run_name: str | None = None,
     preview_dir: Path = dir_previews,
     preview_samples: int = 4,
+    debug_recorder: TrainingDebugRecorder | None = None,
 ):
+    if debug_recorder is not None:
+        debug_recorder.update(status="running", phase="loading_dataset", h5_file=str(h5_file))
     dataset = H5SpotSeparationDataset(h5_file, img_scale)
 
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
+    if debug_recorder is not None:
+        debug_recorder.update(
+            phase="splitting_dataset",
+            dataset_size=len(dataset),
+            train_size=n_train,
+            validation_size=n_val,
+        )
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
     loader_args = {
@@ -428,6 +510,18 @@ def train_model(
     run_dir = Path(log_dir) / run_name
     writer = SummaryWriter(log_dir=str(run_dir))
     run_preview_dir = Path(preview_dir) / run_name
+    if debug_recorder is not None:
+        debug_recorder.update(
+            phase="run_initialized",
+            run_name=run_name,
+            run_dir=str(run_dir),
+            preview_dir=str(run_preview_dir),
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            device=device.type,
+            amp=amp,
+        )
     logging.info("TensorBoard log directory: %s", run_dir)
     logging.info("Prediction preview directory: %s", run_preview_dir)
     logging.info("Open TensorBoard with: tensorboard --logdir %s", Path(log_dir))
@@ -485,10 +579,13 @@ def train_model(
     global_step = 0
 
     for epoch in range(1, epochs + 1):
+        if debug_recorder is not None:
+            debug_recorder.update(status="running", phase="epoch_started", epoch=epoch, epochs=epochs)
+        logging.info("Starting epoch %d/%d", epoch, epochs)
         model.train()
         train_epoch_metrics = []
         with tqdm(total=n_train, desc=f"Epoch {epoch}/{epochs}", unit="img") as pbar:
-            for batch in train_loader:
+            for batch_idx, batch in enumerate(train_loader, start=1):
                 images = batch["image"]
                 targets = batch["target"].to(device=device, dtype=torch.float32)
 
@@ -518,6 +615,15 @@ def train_model(
 
                 pbar.update(images.shape[0])
                 global_step += 1
+                if debug_recorder is not None and (batch_idx == 1 or batch_idx % 10 == 0):
+                    debug_recorder.update(
+                        phase="training_batch",
+                        epoch=epoch,
+                        epochs=epochs,
+                        batch=batch_idx,
+                        batches_per_epoch=len(train_loader),
+                        global_step=global_step,
+                    )
                 with torch.no_grad():
                     batch_metrics = metrics_to_floats(separation_metric_tensors(predictions, targets, images))
                 train_epoch_metrics.append(batch_metrics)
@@ -537,6 +643,13 @@ def train_model(
                         if value.grad is not None and not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                             writer.add_histogram(f"Gradients/{tag}", value.grad.data, global_step)
 
+                    if debug_recorder is not None:
+                        debug_recorder.update(
+                            phase="validation_step",
+                            epoch=epoch,
+                            batch=batch_idx,
+                            global_step=global_step,
+                        )
                     val_metrics = evaluate(model, val_loader, device, amp)
                     val_score = val_metrics.get("loss_total", 0.0)
                     scheduler.step(val_score)
@@ -553,11 +666,22 @@ def train_model(
                     writer.add_image("spots/pred_1", preview_predictions[0, 0:1].float(), global_step)
                     writer.add_image("spots/residual_pred_2", preview_predictions[0, 1:2].float(), global_step)
 
+        if debug_recorder is not None:
+            debug_recorder.update(phase="epoch_validation", epoch=epoch, epochs=epochs, global_step=global_step)
         train_metrics = average_metric_dicts(train_epoch_metrics)
         val_metrics = evaluate(model, val_loader, device, amp)
         mean_epoch_loss = train_metrics.get("loss_total", 0.0)
         val_score = val_metrics.get("loss_total", 0.0)
         scheduler.step(val_score)
+        if debug_recorder is not None:
+            debug_recorder.update(
+                phase="saving_prediction_previews",
+                epoch=epoch,
+                epochs=epochs,
+                global_step=global_step,
+                train_loss=mean_epoch_loss,
+                validation_loss=val_score,
+            )
         save_prediction_previews(
             model,
             val_loader,
@@ -574,11 +698,25 @@ def train_model(
         logging.info("Epoch %d mean training loss: %s", epoch, mean_epoch_loss)
         logging.info("Epoch %d validation separation loss: %s", epoch, val_score)
 
+        if debug_recorder is not None:
+            debug_recorder.update(
+                phase="epoch_finished",
+                epoch=epoch,
+                epochs=epochs,
+                global_step=global_step,
+                train_loss=mean_epoch_loss,
+                validation_loss=val_score,
+            )
+
         if save_checkpoint:
+            if debug_recorder is not None:
+                debug_recorder.update(phase="saving_checkpoint", epoch=epoch, epochs=epochs, global_step=global_step)
             dir_checkpoint.mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(dir_checkpoint / f"checkpoint_epoch{epoch}.pth"))
             logging.info("Checkpoint %d saved!", epoch)
 
+    if debug_recorder is not None:
+        debug_recorder.update(status="completed", phase="training_finished", epochs=epochs, global_step=global_step)
     writer.close()
 
 
@@ -604,78 +742,96 @@ def get_args():
     parser.add_argument("--run-name", type=str, default=None, help="Optional TensorBoard run name")
     parser.add_argument("--preview-dir", type=str, default=str(dir_previews), help="Directory for saved prediction PNG previews")
     parser.add_argument("--preview-samples", type=int, default=4, help="Number of validation previews to save per epoch")
+    parser.add_argument("--debug-dir", type=str, default=str(dir_debug), help="Directory for durable debug logs and heartbeat state")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = get_args()
-
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logging.info("Using device %s", device)
-
-    model = UNet(n_channels=1, n_classes=1, bilinear=args.bilinear)
-    model = model.to(memory_format=torch.channels_last)
-
-    logging.info(
-        "Network: %d input channel, %d output channel, %s upscaling",
-        model.n_channels,
-        model.n_classes,
-        "Bilinear" if model.bilinear else "Transposed conv",
+    debug_log_file, state_file, debug_recorder = setup_logging(Path(args.debug_dir))
+    install_signal_logging(debug_recorder)
+    debug_recorder.update(
+        phase="arguments_parsed",
+        command=" ".join(sys.argv),
+        debug_log_file=str(debug_log_file),
+        state_file=str(state_file),
     )
 
-    if args.load:
-        state_dict = torch.load(args.load, map_location=device)
-        state_dict.pop("mask_values", None)
-        model_state = model.state_dict()
-        compatible_state = {
-            name: value
-            for name, value in state_dict.items()
-            if name in model_state and value.shape == model_state[name].shape
-        }
-        skipped_keys = sorted(set(state_dict) - set(compatible_state))
-        model.load_state_dict(compatible_state, strict=False)
-        if skipped_keys:
-            logging.info("Skipped incompatible checkpoint keys: %s", ", ".join(skipped_keys))
-        logging.info("Model loaded from %s", args.load)
-
-    model.to(device=device)
-
     try:
-        train_model(
-            model=model,
-            device=device,
-            h5_file=Path(args.h5_file),
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            learning_rate=args.lr,
-            img_scale=args.scale,
-            val_percent=args.val / 100,
-            amp=args.amp,
-            log_dir=Path(args.log_dir),
-            run_name=args.run_name,
-            preview_dir=Path(args.preview_dir),
-            preview_samples=args.preview_samples,
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        debug_recorder.update(phase="device_selected", device=str(device), cuda_available=torch.cuda.is_available())
+        logging.info("Using device %s", device)
+
+        model = UNet(n_channels=1, n_classes=1, bilinear=args.bilinear)
+        model = model.to(memory_format=torch.channels_last)
+
+        logging.info(
+            "Network: %d input channel, %d output channel, %s upscaling",
+            model.n_channels,
+            model.n_classes,
+            "Bilinear" if model.bilinear else "Transposed conv",
         )
-    except torch.cuda.OutOfMemoryError:
-        logging.error(
-            "Detected OutOfMemoryError. Enabling checkpointing to reduce memory usage. "
-            "Consider enabling AMP (--amp) for faster and more memory-efficient training."
-        )
-        torch.cuda.empty_cache()
-        model.use_checkpointing()
-        train_model(
-            model=model,
-            device=device,
-            h5_file=Path(args.h5_file),
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            learning_rate=args.lr,
-            img_scale=args.scale,
-            val_percent=args.val / 100,
-            amp=args.amp,
-            log_dir=Path(args.log_dir),
-            run_name=args.run_name,
-            preview_dir=Path(args.preview_dir),
-            preview_samples=args.preview_samples,
-        )
+
+        if args.load:
+            debug_recorder.update(phase="loading_checkpoint", checkpoint=args.load)
+            state_dict = torch.load(args.load, map_location=device)
+            state_dict.pop("mask_values", None)
+            model_state = model.state_dict()
+            compatible_state = {
+                name: value
+                for name, value in state_dict.items()
+                if name in model_state and value.shape == model_state[name].shape
+            }
+            skipped_keys = sorted(set(state_dict) - set(compatible_state))
+            model.load_state_dict(compatible_state, strict=False)
+            if skipped_keys:
+                logging.info("Skipped incompatible checkpoint keys: %s", ", ".join(skipped_keys))
+            logging.info("Model loaded from %s", args.load)
+
+        model.to(device=device)
+
+        try:
+            train_model(
+                model=model,
+                device=device,
+                h5_file=Path(args.h5_file),
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                learning_rate=args.lr,
+                img_scale=args.scale,
+                val_percent=args.val / 100,
+                amp=args.amp,
+                log_dir=Path(args.log_dir),
+                run_name=args.run_name,
+                preview_dir=Path(args.preview_dir),
+                preview_samples=args.preview_samples,
+                debug_recorder=debug_recorder,
+            )
+        except torch.cuda.OutOfMemoryError as exc:
+            logging.exception(
+                "Detected OutOfMemoryError. Enabling checkpointing to reduce memory usage. "
+                "Consider enabling AMP (--amp) for faster and more memory-efficient training."
+            )
+            debug_recorder.update(status="oom_retrying", phase="cuda_out_of_memory", error=str(exc))
+            torch.cuda.empty_cache()
+            model.use_checkpointing()
+            train_model(
+                model=model,
+                device=device,
+                h5_file=Path(args.h5_file),
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                learning_rate=args.lr,
+                img_scale=args.scale,
+                val_percent=args.val / 100,
+                amp=args.amp,
+                log_dir=Path(args.log_dir),
+                run_name=args.run_name,
+                preview_dir=Path(args.preview_dir),
+                preview_samples=args.preview_samples,
+                debug_recorder=debug_recorder,
+            )
+    except Exception as exc:
+        logging.exception("Training failed with an unhandled exception.")
+        debug_recorder.record_exception(exc)
+        raise
