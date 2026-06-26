@@ -372,6 +372,11 @@ def make_run_name(h5_file: Path, epochs: int, batch_size: int, learning_rate: fl
     return f"{timestamp}_{data_name}_e{epochs}_b{batch_size}_lr{learning_rate:g}_s{img_scale:g}"
 
 
+def safe_model_file_name(run_name: str) -> str:
+    safe_name = "".join(char if char.isalnum() or char in "._-" else "_" for char in run_name)
+    return f"final_{safe_name}.pth"
+
+
 def train_model(
     model,
     device,
@@ -629,8 +634,26 @@ def train_model(
             torch.save(model.state_dict(), str(dir_checkpoint / f"checkpoint_epoch{epoch}.pth"))
             logging.info("Checkpoint %d saved!", epoch)
 
+    dir_checkpoint.mkdir(parents=True, exist_ok=True)
+    final_model_file = dir_checkpoint / safe_model_file_name(run_name)
     if debug_recorder is not None:
-        debug_recorder.update(status="completed", phase="training_finished", epochs=epochs, global_step=global_step)
+        debug_recorder.update(
+            phase="saving_final_model",
+            epochs=epochs,
+            global_step=global_step,
+            final_model_file=str(final_model_file),
+        )
+    torch.save(model.state_dict(), str(final_model_file))
+    logging.info("Final model saved to %s", final_model_file)
+
+    if debug_recorder is not None:
+        debug_recorder.update(
+            status="completed",
+            phase="training_finished",
+            epochs=epochs,
+            global_step=global_step,
+            final_model_file=str(final_model_file),
+        )
     writer.close()
 
 
