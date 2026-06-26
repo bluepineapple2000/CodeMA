@@ -186,78 +186,104 @@ def spot_intensity_prediction(logits: torch.Tensor) -> torch.Tensor:
     return F.softplus(logits)
 
 
-def weighted_l1_per_sample(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    foreground_weight: float = 8.0,
-    foreground_threshold: float = 1e-4,
-) -> torch.Tensor:
-    """L1 with extra weight on nonzero target pixels, normalized per sample."""
-    error = (prediction - target).abs()
-    foreground = (target > foreground_threshold).to(dtype=error.dtype)
-    weights = 1.0 + foreground_weight * foreground
-    numerator = (error * weights).sum(dim=(1, 2, 3))
-    denominator = weights.sum(dim=(1, 2, 3)).clamp_min(1.0)
-    return numerator / denominator
-
-
-def permutation_invariant_weighted_l1_loss(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    foreground_weight: float = 8.0,
-) -> torch.Tensor:
-    direct = weighted_l1_per_sample(prediction, target, foreground_weight=foreground_weight)
-    swapped = weighted_l1_per_sample(prediction, target.flip(1), foreground_weight=foreground_weight)
-    return torch.minimum(direct, swapped).mean()
-
-
-def reconstruction_l1_loss(prediction: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
-    return F.l1_loss(prediction.sum(dim=1, keepdim=True), image)
-
-
-def background_l1_loss(
-    prediction: torch.Tensor,
-    image: torch.Tensor,
-    background_threshold: float = 1e-4,
-) -> torch.Tensor:
-    background = (image <= background_threshold).to(dtype=prediction.dtype)
-    denominator = (background.sum() * prediction.shape[1]).clamp_min(1.0)
-    return (prediction.abs() * background).sum() / denominator
-
-
-def overlap_exclusivity_loss(
-    prediction: torch.Tensor,
+def target_masks_from_intensity(
     target: torch.Tensor,
     foreground_threshold: float = 1e-4,
 ) -> torch.Tensor:
-    target_overlap = (target[:, 0:1] > foreground_threshold) & (target[:, 1:2] > foreground_threshold)
-    disallowed_overlap = (~target_overlap).to(dtype=prediction.dtype)
-    overlap_intensity = prediction[:, 0:1] * prediction[:, 1:2]
-    return (overlap_intensity * disallowed_overlap).sum() / disallowed_overlap.sum().clamp_min(1.0)
+    return (target > foreground_threshold).to(dtype=target.dtype)
+
+
+def predicted_presence_from_intensity(prediction: torch.Tensor) -> torch.Tensor:
+    # Targets are normalized to roughly [0, 1], so clamp intensity predictions into a soft mask range.
+    return prediction.clamp(0.0, 1.0)
+
+
+def weighted_tversky_loss_per_sample(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    foreground_threshold: float = 1e-4,
+    alpha: float = 0.7,
+    beta: float = 0.3,
+    background_weight: float = 0.02,
+    wrong_spot_weight: float = 2.0,
+    smooth: float = 1.0,
+) -> torch.Tensor:
+    """Tversky mask loss for already matched two-channel predictions.
+
+    Own-spot and true overlap pixels are positives. Other-spot-only pixels are weighted
+    false positives. Plain background false positives are still visible but very weak.
+    """
+    pred_mask = predicted_presence_from_intensity(prediction)
+    target_mask = target_masks_from_intensity(target, foreground_threshold=foreground_threshold)
+    other_mask = target_mask.flip(1)
+    other_only = (other_mask > 0.5) & (target_mask <= 0.5)
+    background = (other_mask <= 0.5) & (target_mask <= 0.5)
+
+    false_positive_weights = torch.ones_like(pred_mask)
+    false_positive_weights = torch.where(
+        background,
+        torch.full_like(false_positive_weights, background_weight),
+        false_positive_weights,
+    )
+    false_positive_weights = torch.where(
+        other_only,
+        torch.full_like(false_positive_weights, wrong_spot_weight),
+        false_positive_weights,
+    )
+
+    true_positive = (pred_mask * target_mask).sum(dim=(2, 3))
+    false_positive = (pred_mask * (1.0 - target_mask) * false_positive_weights).sum(dim=(2, 3))
+    false_negative = ((1.0 - pred_mask) * target_mask).sum(dim=(2, 3))
+    score = (true_positive + smooth) / (
+        true_positive + alpha * false_positive + beta * false_negative + smooth
+    )
+    return 1.0 - score.mean(dim=1)
+
+
+def foreground_intensity_l1_per_sample(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    foreground_threshold: float = 1e-4,
+    overlap_weight: float = 0.5,
+) -> torch.Tensor:
+    """Intensity loss only where the matched target spot exists, including true overlap."""
+    target_mask = target_masks_from_intensity(target, foreground_threshold=foreground_threshold)
+    overlap = (target_mask > 0.5) & (target_mask.flip(1) > 0.5)
+    weights = torch.where(overlap, torch.full_like(target_mask, overlap_weight), target_mask)
+    error = (prediction - target).abs() * weights
+    return error.sum(dim=(1, 2, 3)) / weights.sum(dim=(1, 2, 3)).clamp_min(1.0)
+
+
+def matched_separation_loss_per_sample(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    mask_loss_weight: float = 1.0,
+    intensity_loss_weight: float = 0.2,
+) -> dict[str, torch.Tensor]:
+    mask = weighted_tversky_loss_per_sample(prediction, target)
+    intensity = foreground_intensity_l1_per_sample(prediction, target)
+    total = mask_loss_weight * mask + intensity_loss_weight * intensity
+    return {
+        "total": total,
+        "mask_tversky": mask,
+        "intensity": intensity,
+    }
 
 
 def separation_loss_components(
     prediction: torch.Tensor,
     target: torch.Tensor,
     image: torch.Tensor,
-    foreground_weight: float = 8.0,
 ) -> dict[str, torch.Tensor]:
-    spot = permutation_invariant_weighted_l1_loss(
-        prediction,
-        target,
-        foreground_weight=foreground_weight,
-    )
-    reconstruction = reconstruction_l1_loss(prediction, image)
-    background = background_l1_loss(prediction, image)
-    overlap = overlap_exclusivity_loss(prediction, target)
-    total = spot + 0.5 * reconstruction + 0.1 * background + 0.05 * overlap
-    return {
-        "total": total,
-        "spot": spot,
-        "reconstruction": reconstruction,
-        "background": background,
-        "overlap": overlap,
+    del image  # Separation is supervised by the two target spot channels, not by reconstruction.
+    direct = matched_separation_loss_per_sample(prediction, target)
+    swapped = matched_separation_loss_per_sample(prediction, target.flip(1))
+    use_swapped = swapped["total"] < direct["total"]
+    selected = {
+        name: torch.where(use_swapped, swapped[name], direct[name]).mean()
+        for name in direct
     }
+    return selected
 
 
 def separation_loss(
@@ -269,8 +295,8 @@ def separation_loss(
 
 
 def align_prediction_channels(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    direct = F.l1_loss(prediction, target, reduction="none").mean(dim=(1, 2, 3))
-    swapped = F.l1_loss(prediction, target.flip(1), reduction="none").mean(dim=(1, 2, 3))
+    direct = matched_separation_loss_per_sample(prediction, target)["total"]
+    swapped = matched_separation_loss_per_sample(prediction, target.flip(1))["total"]
     use_swapped = swapped < direct
     aligned = prediction.clone()
     aligned[use_swapped] = prediction[use_swapped].flip(1)
@@ -451,7 +477,7 @@ def train_model(
             "run_name": run_name,
             "preview_samples": preview_samples,
             "optimizer": "AdamW",
-            "loss": "weighted_pi_l1+0.5_sum+0.1_background+0.05_overlap",
+            "loss": "PI_weighted_tversky_mask+0.2_foreground_intensity_l1",
         },
         {"hparam/metric": 0},
     )
@@ -541,23 +567,19 @@ def train_model(
                     torch.stack(
                         (
                             loss_parts["total"],
-                            loss_parts["spot"],
-                            loss_parts["reconstruction"],
-                            loss_parts["background"],
-                            loss_parts["overlap"],
+                            loss_parts["mask_tversky"],
+                            loss_parts["intensity"],
                         )
                     )
                     .detach()
                     .cpu()
                     .tolist()
                 )
-                total_loss, spot_loss, reconstruction_loss, background_loss, overlap_loss = loss_values
+                total_loss, mask_tversky_loss, intensity_loss = loss_values
                 epoch_loss += total_loss
                 writer.add_scalar("Loss/train_batch", total_loss, global_step)
-                writer.add_scalar("Loss_parts/train_spot", spot_loss, global_step)
-                writer.add_scalar("Loss_parts/train_reconstruction", reconstruction_loss, global_step)
-                writer.add_scalar("Loss_parts/train_background", background_loss, global_step)
-                writer.add_scalar("Loss_parts/train_overlap", overlap_loss, global_step)
+                writer.add_scalar("Loss_parts/train_mask_tversky", mask_tversky_loss, global_step)
+                writer.add_scalar("Loss_parts/train_intensity", intensity_loss, global_step)
                 pbar.set_postfix(**{"loss (batch)": total_loss})
 
                 division_step = n_train // (5 * batch_size)

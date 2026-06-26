@@ -147,33 +147,69 @@ prediction = F.softplus(logits)
 
 ## Current Loss
 
-The current loss is a composite separation loss implemented by `separation_loss_components` in `train.py`:
+The current loss is a permutation-invariant combination of a weighted Tversky-style mask loss and a foreground intensity loss:
 
 ```text
-total = spot + 0.5 * reconstruction + 0.1 * background + 0.05 * overlap
+total = mask_tversky + 0.2 * intensity
 ```
 
-The `spot` term is a foreground-weighted, permutation-invariant L1 loss. It compares both possible channel assignments and keeps the lower loss:
+The two output channels are still unordered. For every sample, the loss computes both possible assignments and keeps the lower one:
+
+```text
+direct:  pred_0 -> target_0, pred_1 -> target_1
+swapped: pred_0 -> target_1, pred_1 -> target_0
+loss:    min(direct, swapped)
+```
+
+This allows the network to decide which output channel contains which spot, while still forcing the two channels to explain two different target spots.
+
+The mask loss derives binary spot masks from the intensity targets:
 
 ```python
-direct = weighted_l1(prediction, target)
-swapped = weighted_l1(prediction, target.flip(1))
-spot = min(direct, swapped)
+target_mask = target > 1e-4
+pred_mask = prediction.clamp(0.0, 1.0)
 ```
 
-Foreground pixels in the target receive extra weight, so the loss is less dominated by the many zero-valued background pixels. The default foreground weight is `8.0`.
+For a matched output channel, pixels are treated as follows:
 
-The `reconstruction` term enforces the physical constraint that the two predicted source spots should add back up to the normalized overlapped input:
-
-```python
-reconstruction = L1(pred_1 + pred_2, input_image)
+```text
+own spot pixel:       positive target
+true overlap pixel:   positive target for both spot channels
+other-spot-only pixel: false positive with high weight
+plain background:     false positive with very low weight
 ```
 
-The `background` term penalizes predicted intensity where the normalized input image is effectively zero. This discourages the model from spreading faint signal across the empty patch.
+The weighted Tversky score is:
 
-The `overlap` term penalizes both prediction channels being bright at the same pixel unless the target itself contains true two-spot overlap at that pixel. This is a light exclusivity prior, not a hard constraint.
+```text
+TP / (TP + alpha * FP + beta * FN)
+```
 
-Each component is logged to TensorBoard under `Loss_parts/` so the behavior can be inspected separately during training.
+with the current defaults:
+
+```text
+alpha = 0.7
+beta = 0.3
+background false-positive weight = 0.02
+other-spot false-positive weight = 2.0
+```
+
+This means the huge empty background is barely counted, but predicting spot 1 in a pixel that belongs only to spot 2 is punished strongly. Pixels where both target spots truly overlap are positive for both channels and are not treated as duplicate errors.
+
+The intensity term is a foreground-only L1 loss. It compares predicted intensity to the matched target intensity only where that target spot exists. True overlap pixels are included with a reduced weight:
+
+```text
+overlap intensity weight = 0.5
+```
+
+There is currently no reconstruction loss. The earlier reconstruction term encouraged `pred_0 + pred_1` to match the input image, but that can be satisfied by duplicate or averaged outputs and does not directly enforce separation. The new loss focuses on assigning pixels and intensities to the correct spot channel.
+
+Each component is logged to TensorBoard under:
+
+```text
+Loss_parts/train_mask_tversky
+Loss_parts/train_intensity
+```
 
 ## Training Setup
 
@@ -217,7 +253,7 @@ Each preview shows:
 - predicted spot 2
 - summed prediction error
 
-Before plotting, prediction channels are aligned to the target channels with the same direct-vs-swapped L1 comparison used by the loss.
+Before plotting, prediction channels are aligned to the target channels with the same direct-vs-swapped Tversky-plus-intensity assignment used by the loss.
 
 ## Important Historical Architecture Change
 
@@ -246,16 +282,16 @@ synthetic overlapping diffraction spots
 -> per-sample robust intensity normalization
 -> two-channel U-Net intensity regression
 -> softplus non-negative prediction
--> foreground-weighted permutation-invariant separation loss
--> reconstruction, background, and overlap/exclusivity penalties
+-> permutation-invariant weighted Tversky mask assignment
+-> foreground-only matched intensity regression
 ```
 
-The current baseline now directly addresses the earlier suspected failure modes: background domination, missing reconstruction pressure, and weak separation pressure.
+The current baseline directly addresses the suspected failure modes of background domination and weak spot assignment pressure. It intentionally removes reconstruction loss because reconstructing the input can reward duplicated or averaged outputs instead of true separation.
 
 If training still shows little or no improvement, the next issues to check are:
 
 - whether the model can overfit a tiny subset of about 20 samples
 - whether batch size 1 plus BatchNorm gives noisy normalization statistics
-- whether the loss weights need stronger foreground or reconstruction terms
+- whether the Tversky weights need stronger wrong-spot penalties or less false-negative tolerance
 - whether `--scale 1.0` causes memory pressure and should be combined with `--amp`
 - whether the synthetic target is ambiguous in heavily overlapped cases
