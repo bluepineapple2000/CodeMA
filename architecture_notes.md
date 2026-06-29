@@ -73,130 +73,112 @@ Both cases keep enough spatial values in the bottleneck for stable training with
 
 ## Output Interpretation
 
-The four output channels are interpreted as two mask channels and two intensity-splitting channels:
+The four output channels are interpreted as two mask channels and two intensity channels:
 
 ```python
 mask_logits = logits[:, 0:2]
-fraction_logits = logits[:, 2:4]
+intensity_logits = logits[:, 2:4]
 
 predicted_masks = sigmoid(mask_logits)
-fractions = softmax(fraction_logits, dim=1)
-predicted_spot_images = fractions * image
+predicted_spot_images = sigmoid(intensity_logits)
 ```
 
 The two predicted masks are supervised against `spot_masks`. The two predicted intensity images are supervised against `spot_images`.
 
-The softmax over the two fraction channels makes the intensity decomposition conservative:
+Important: in the current `train.py`, the intensity channels are independent sigmoid outputs. They are **not** produced by a softmax split of the input image. Therefore the current model does not guarantee:
 
 ```text
-fraction_1 + fraction_2 = 1
 predicted_spot_1 + predicted_spot_2 = image
 ```
 
-up to normal floating-point precision. This is the main physics-inspired constraint in the current implementation: the model is encouraged by construction to distribute the measured input intensity between the two spots rather than inventing extra total intensity.
+The conservation idea is only weakly represented through monitoring/preview plots and the background regularizer, not by the output parameterization.
 
 ## Training Objective and Loss
 
-The current training objective is symmetric: both spots are predicted directly, and both spots are included in the loss. This differs from the earlier one-output model, where spot 1 was predicted directly and spot 2 was treated as a residual.
-
-The total loss is:
+The current loss in `train.py` is implemented by `separation_loss_components`:
 
 ```text
 L_total =
-    L_intensity_dice
-  + 0.25 * L_foreground_L1
-  + 0.50 * L_mask_BCE
-  + 0.50 * L_mask_dice
-  + 0.10 * L_reconstruction
-  + 0.05 * L_outside_mask
-  + 0.01 * L_background
+    L_mask_1
+  + L_mask_2
+  + L_intensity_1
+  + L_intensity_2
+  + 0.2 * L_background
 ```
 
 where:
 
 ```text
-predicted_spots = softmax(fraction_logits, channel) * image
-predicted_masks = sigmoid(mask_logits)
-target_spots    = spot_images
-target_masks    = spot_masks
+predicted_masks      = sigmoid(mask_logits)
+predicted_intensities = sigmoid(intensity_logits)
+target_masks         = spot_masks
+target_intensities   = spot_images
 ```
 
-### Intensity Dice Term
+This branch is a four-output multitask model: two channels learn spatial masks, and two channels learn normalized spot intensities.
 
-The intensity Dice term compares the two predicted spot-intensity images with the two target spot-intensity images:
+### Mask Loss
+
+For each matched spot channel, the mask loss combines soft Dice and foreground-weighted binary cross-entropy:
 
 ```text
-Dice = (2 * sum(prediction * target) + smooth) / (sum(prediction) + sum(target) + smooth)
-L_intensity_dice = 1 - mean(Dice)
+L_mask_i = L_dice_i + L_weighted_BCE_i
 ```
 
-This is a soft intensity Dice, not a hard binary Dice. Brighter pixels contribute more strongly, so the term rewards placing intensity in the correct source-specific spot region.
-
-### Foreground-Weighted L1 Term
-
-The foreground-weighted L1 term penalizes absolute intensity error:
+The Dice part is:
 
 ```text
-error = abs(predicted_spots - target_spots)
-foreground = target_spots > 1e-4
-weight = 1 + 8 * foreground
-L_foreground_L1 = sum(error * weight) / sum(weight)
+Dice = (2 * sum(predicted_mask * target_mask) + smooth)
+       / (sum(predicted_mask) + sum(target_mask) + smooth)
+L_dice = 1 - mean(Dice)
 ```
 
-This term complements the Dice term. Dice rewards overlap and relative support, while L1 encourages the predicted intensity values to match the normalized ground-truth intensities. The foreground weighting is needed because most pixels are background; without it, the model could achieve a low average error by under-predicting signal.
+The BCE part uses the raw `mask_logits` and downweights background pixels:
 
-### Mask BCE Term
+```python
+weights = 1.0 where target_mask > 0.5
+weights = 0.05 where target_mask <= 0.5
+```
 
-The mask binary cross-entropy term supervises the two raw mask-logit channels:
+This tries to prevent the many background pixels from dominating the mask objective.
+
+### Intensity Loss
+
+For each matched spot channel, the intensity loss is foreground-only L1:
 
 ```text
-L_mask_BCE = BCEWithLogits(mask_logits, target_masks)
+L_intensity_i = mean(abs(predicted_intensity_i - target_intensity_i))
 ```
 
-This term encourages each predicted mask channel to represent the spatial support of its corresponding spot.
+but only over pixels where the corresponding `target_mask_i > 0.5`.
 
-### Mask Dice Term
+This means intensity values are primarily supervised inside the true spot support. Pixels outside the target mask do not strongly affect the per-spot intensity loss.
 
-The mask Dice term compares the sigmoid mask probabilities with the binary mask targets:
+### Background Loss
+
+The background loss penalizes predicted intensity outside the corresponding ground-truth mask:
 
 ```text
-predicted_masks = sigmoid(mask_logits)
-L_mask_dice = 1 - mean(Dice(predicted_masks, target_masks))
+background = target_mask <= 0.5
+L_background = mean(abs(predicted_intensity) over background pixels)
 ```
 
-This is useful because spot masks occupy a relatively small fraction of the image. BCE provides pixelwise supervision, while Dice reduces the effect of background dominance.
+It is weighted by `0.2` in the total loss. This is the main term that discourages intensity leakage outside the two spot masks.
 
-### Reconstruction Consistency Term
+### Channel Assignment
 
-The reconstruction term compares the sum of the predicted spot intensities with the input image:
+The current loss is **not permutation invariant**. It assumes:
 
 ```text
-reconstruction = predicted_spot_1 + predicted_spot_2
-L_reconstruction = mean(abs(reconstruction - image))
+output mask/intensity channel 0 -> target spot 0
+output mask/intensity channel 1 -> target spot 1
 ```
 
-Because the intensity fractions are produced with a softmax, this term should usually be small. It is retained as an explicit diagnostic and regularizer for the physical conservation idea: the separated spots should reconstruct the measured combined diffraction patch.
+So if the two target spot channels are arbitrary or can swap meaning between samples, this loss can give contradictory supervision. This is a likely reason the training can plateau or produce confusing outputs. A permutation-invariant variant would compare both channel assignments and use the lower loss.
 
-### Outside-Mask Penalty
+### Current Limitations
 
-The outside-mask term penalizes predicted source intensity outside the corresponding ground-truth mask:
-
-```text
-L_outside_mask = mean(abs(predicted_spots * (1 - target_masks)))
-```
-
-This encourages each predicted intensity channel to stay inside the spatial support of its own spot. It links the intensity output and the mask output: intensities should not leak into regions that are not assigned to that spot.
-
-### Background Term
-
-The background term penalizes predicted source intensity where the combined input image is essentially empty:
-
-```text
-background = image <= 1e-4
-L_background = mean(abs(predicted_spots) over background pixels)
-```
-
-This discourages hallucinated signal outside measured diffraction intensity. Its coefficient is small because it is a regularizer rather than the main supervision signal.
+The current loss does not include the newer Tversky-style wrong-spot penalty discussed separately. It also does not use a softmax intensity split, so the model can predict both intensities independently. This gives the network flexibility, but it does not enforce conservation of the input intensity.
 
 ## Is This a PIN or PINN?
 
@@ -204,21 +186,23 @@ The current implementation is best described as a physics-informed or physics-co
 
 A classical physics-informed neural network usually includes residuals of governing equations, for example a PDE, ODE, or differentiable physical model evaluated at collocation points. This project does not currently include a PDE residual or an explicit diffraction forward model.
 
-However, the model does include physically motivated constraints:
+However, the model does include physically motivated structure:
 
-- nonnegative spot intensities through `softmax(fraction_logits) * image`,
-- conservation of measured intensity through `predicted_spot_1 + predicted_spot_2 = image`,
-- reconstruction consistency in the loss,
+- nonnegative mask probabilities through sigmoid mask outputs,
+- normalized nonnegative intensity predictions through sigmoid intensity outputs,
 - spatial support supervision through `spot_masks`,
-- outside-mask and background penalties to discourage physically implausible signal leakage.
+- foreground-only intensity supervision inside the true masks,
+- background penalties to discourage physically implausible signal leakage.
+
+Unlike the earlier softmax-split PIN-style experiment, this branch does not enforce exact conservation of measured input intensity in the output parameterization.
 
 So, for thesis wording, a careful formulation would be:
 
 ```text
 The model is a physics-informed U-Net for two-source diffraction spot separation.
 It is not a classical PINN with a differential-equation residual; instead, physical
-prior knowledge is incorporated through intensity-conservation and spatial-support
-constraints in the output parameterization and loss function.
+prior knowledge is incorporated through nonnegative outputs, spatial-support
+supervision, and background leakage penalties in the loss function.
 ```
 
 ## Architecture Change From the Earlier Version
@@ -253,6 +237,6 @@ This keeps the original resolution through the first convolutional block and lea
 
 ## Notes for Thesis Writing
 
-The final architecture can be described as a modified U-Net for physics-informed two-source intensity and mask separation from overlapping grayscale diffraction spot patches. The model predicts both spot masks and spot intensities. The intensity channels are parameterized as a softmax split of the input image, which embeds an intensity-conservation prior directly into the prediction.
+The final architecture in this branch can be described as a modified U-Net for two-source intensity and mask separation from overlapping grayscale diffraction spot patches. The model predicts both spot masks and spot intensities. The current intensity channels are independent sigmoid outputs, not a softmax split of the input image, so exact intensity conservation is not embedded in this branch.
 
-The loss should be described as a multi-task objective combining intensity reconstruction, mask segmentation, and physically motivated regularization. The most important distinction from the earlier implementation is that the current model is symmetric: both spots are predicted and supervised directly, rather than predicting only one spot and treating the other as a residual.
+The loss should be described as a multi-task objective combining mask segmentation, foreground intensity regression, and background leakage regularization. The most important distinction from the earlier implementation is that the current model is symmetric: both spots are predicted and supervised directly, rather than predicting only one spot and treating the other as a residual.
