@@ -219,71 +219,42 @@ def soft_dice_per_sample(
     return numerator / denominator
 
 
-def masked_l1_loss_per_spot(
+def masked_mse_loss_per_spot(
     prediction: torch.Tensor,
     target: torch.Tensor,
-    mask_target: torch.Tensor,
-) -> torch.Tensor:
-    """Mean foreground intensity error for each of the two matched spots."""
-    foreground = (mask_target > 0.5).to(dtype=prediction.dtype)
-    error = (prediction - target).abs() * foreground
-    return error.sum(dim=(0, 2, 3)) / foreground.sum(dim=(0, 2, 3)).clamp_min(1.0)
-
-
-def background_l1_loss(
-    prediction: torch.Tensor,
-    mask_target: torch.Tensor,
-) -> torch.Tensor:
-    """Mean predicted intensity outside the corresponding ground-truth spot mask."""
-    background = (mask_target <= 0.5).to(dtype=prediction.dtype)
-    return (prediction.abs() * background).sum() / background.sum().clamp_min(1.0)
-
-
-def matched_mask_loss_per_spot(
-    mask_logits: torch.Tensor,
     mask_prediction: torch.Tensor,
-    mask_target: torch.Tensor,
-    background_weight: float = 0.05,
 ) -> torch.Tensor:
-    """Dice + foreground-weighted BCE, independently for each matched spot."""
-    dice_per_spot = 1.0 - soft_dice_per_sample(mask_prediction, mask_target).mean(dim=0)
+    """Mean squared intensity error inside each predicted spot mask."""
+    predicted_foreground = (mask_prediction > 0.5).to(dtype=prediction.dtype)
+    squared_error = (prediction - target).square() * predicted_foreground
+    return squared_error.sum(dim=(0, 2, 3)) / predicted_foreground.sum(dim=(0, 2, 3)).clamp_min(1.0)
+
+
+def mask_bce_loss_per_spot(
+    mask_logits: torch.Tensor,
+    mask_target: torch.Tensor,
+) -> torch.Tensor:
+    """Binary cross entropy for each of the two matched spot masks."""
     bce = F.binary_cross_entropy_with_logits(mask_logits, mask_target, reduction="none")
-    weights = torch.where(
-        mask_target > 0.5,
-        torch.ones_like(mask_target),
-        torch.full_like(mask_target, background_weight),
-    )
-    weighted_bce_per_spot = (bce * weights).sum(dim=(0, 2, 3)) / weights.sum(
-        dim=(0, 2, 3)
-    ).clamp_min(1e-6)
-    return dice_per_spot + weighted_bce_per_spot
+    return bce.mean(dim=(0, 2, 3))
 
 
 def separation_loss_components(
     outputs: dict[str, torch.Tensor],
     target: torch.Tensor,
     mask_target: torch.Tensor,
-    background_loss_weight: float = 0.2,
-    mask_bce_background_weight: float = 0.05,
 ) -> dict[str, torch.Tensor]:
     prediction = outputs["intensities"]
     mask_prediction = outputs["masks"]
     mask_logits = outputs["mask_logits"]
 
-    mask_losses = matched_mask_loss_per_spot(
-        mask_logits,
-        mask_prediction,
-        mask_target,
-        background_weight=mask_bce_background_weight,
-    )
-    intensity_losses = masked_l1_loss_per_spot(prediction, target, mask_target)
-    background = background_l1_loss(prediction, mask_target)
+    mask_losses = mask_bce_loss_per_spot(mask_logits, mask_target)
+    intensity_losses = masked_mse_loss_per_spot(prediction, target, mask_prediction)
     total = (
         mask_losses[0]
         + mask_losses[1]
         + intensity_losses[0]
         + intensity_losses[1]
-        + background_loss_weight * background
     )
     return {
         "total": total,
@@ -291,7 +262,6 @@ def separation_loss_components(
         "mask_2": mask_losses[1],
         "intensity_1": intensity_losses[0],
         "intensity_2": intensity_losses[1],
-        "background": background,
     }
 
 
@@ -310,7 +280,6 @@ def separation_metric_tensors(
         "loss_mask_2": loss_parts["mask_2"],
         "loss_intensity_1": loss_parts["intensity_1"],
         "loss_intensity_2": loss_parts["intensity_2"],
-        "loss_background": loss_parts["background"],
         "mask_soft_dice_spot_1": per_spot_mask_dice[:, 0].mean(),
         "mask_soft_dice_spot_2": per_spot_mask_dice[:, 1].mean(),
     }
@@ -527,7 +496,7 @@ def train_model(
             "run_name": run_name,
             "preview_samples": preview_samples,
             "optimizer": "AdamW",
-            "loss": "mask_1+mask_2+intensity_1+intensity_2+0.2_background",
+            "loss": "BCE(mask_1)+BCE(mask_2)+pred_masked_MSE(intensity_1)+pred_masked_MSE(intensity_2)",
         },
         {"hparam/metric": 0},
     )
