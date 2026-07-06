@@ -113,6 +113,8 @@ If `--scale 0.5` is used for a smaller or faster experiment, the network receive
 
 ```text
 192 -> 96 -> 48 -> 24 -> 12 -> 24 -> 48 -> 96 -> 192
+
+
 ```
 
 The default command-line option uses transposed-convolution upsampling unless `--bilinear` is passed.
