@@ -513,7 +513,7 @@ def train_model(
         weight_decay=weight_decay,
         foreach=True,
     )
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=200)
     grad_scaler = torch.amp.GradScaler(device.type, enabled=amp)
     global_step = 0
 
