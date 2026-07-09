@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 import sys
+import tomllib
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,8 @@ from tqdm import tqdm
 from unet_model import UNet
 
 
+dir_paths_file = Path("./training_paths.toml")
+default_path_profile = "pin"
 dir_checkpoint = Path("./checkpoints/")
 dir_h5_spot_segmentation = (
     Path(__file__).resolve().parent.parent / "data_esrf" / "augmented_spots_train.h5"
@@ -32,6 +35,84 @@ dir_h5_spot_segmentation = (
 dir_runs = Path("./runs/")
 dir_previews = Path("./prediction_previews/")
 dir_debug = Path("./debug_logs/")
+
+
+def _resolve_config_path(path_value: str | Path, base_dir: Path) -> Path:
+    path = Path(path_value).expanduser()
+    if path.is_absolute():
+        return path
+    return base_dir / path
+
+
+def _profile_value(profile: dict, *names: str) -> str | None:
+    for name in names:
+        if name in profile:
+            return profile[name]
+    return None
+
+
+def load_training_paths(paths_file: Path, profile_name: str) -> dict[str, Path]:
+    paths_file = Path(paths_file)
+    paths = {
+        "h5_file": dir_h5_spot_segmentation,
+        "checkpoint_dir": dir_checkpoint,
+        "log_dir": dir_runs,
+        "preview_dir": dir_previews,
+        "debug_dir": dir_debug,
+    }
+    if not paths_file.exists():
+        return paths
+
+    config = tomllib.loads(paths_file.read_text())
+    if profile_name not in config:
+        available_profiles = ", ".join(sorted(config)) or "<none>"
+        raise ValueError(
+            f"Path profile {profile_name!r} not found in {paths_file}. "
+            f"Available profiles: {available_profiles}"
+        )
+
+    profile = config[profile_name]
+    base_dir = paths_file.parent
+    input_path = _profile_value(profile, "input_path", "inputpath", "h5_file")
+    output_path = _profile_value(profile, "output_path", "output")
+
+    if input_path is not None:
+        paths["h5_file"] = _resolve_config_path(input_path, base_dir)
+
+    if output_path is not None:
+        output_dir = _resolve_config_path(output_path, base_dir)
+        paths["checkpoint_dir"] = output_dir / "checkpoints"
+        paths["log_dir"] = output_dir / "runs"
+        paths["preview_dir"] = output_dir / "prediction_previews"
+        paths["debug_dir"] = output_dir / "debug_logs"
+
+    override_keys = {
+        "checkpoint_dir": ("checkpoint_dir", "checkpoint_path"),
+        "log_dir": ("log_dir", "runs_dir"),
+        "preview_dir": ("preview_dir",),
+        "debug_dir": ("debug_dir",),
+    }
+    for target_key, names in override_keys.items():
+        value = _profile_value(profile, *names)
+        if value is not None:
+            paths[target_key] = _resolve_config_path(value, base_dir)
+
+    return paths
+
+
+def apply_path_overrides(args, paths: dict[str, Path]) -> dict[str, Path]:
+    resolved = dict(paths)
+    cli_overrides = {
+        "h5_file": args.h5_file,
+        "checkpoint_dir": args.checkpoint_dir,
+        "log_dir": args.log_dir,
+        "preview_dir": args.preview_dir,
+        "debug_dir": args.debug_dir,
+    }
+    for key, value in cli_overrides.items():
+        if value is not None:
+            resolved[key] = Path(value).expanduser()
+    return resolved
 
 
 class TrainingDebugRecorder:
@@ -486,6 +567,7 @@ def train_model(
     run_name: str | None = None,
     preview_dir: Path = dir_previews,
     preview_samples: int = 4,
+    checkpoint_dir: Path = dir_checkpoint,
     debug_recorder: TrainingDebugRecorder | None = None,
 ):
     if debug_recorder is not None:
@@ -716,12 +798,12 @@ def train_model(
         if save_checkpoint:
             if debug_recorder is not None:
                 debug_recorder.update(phase="saving_checkpoint", epoch=epoch, epochs=epochs, global_step=global_step)
-            dir_checkpoint.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), str(dir_checkpoint / f"checkpoint_epoch{epoch}.pth"))
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(model.state_dict(), str(checkpoint_dir / f"checkpoint_epoch{epoch}.pth"))
             logging.info("Checkpoint %d saved!", epoch)
 
-    dir_checkpoint.mkdir(parents=True, exist_ok=True)
-    final_model_file = dir_checkpoint / safe_model_file_name(run_name)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    final_model_file = checkpoint_dir / safe_model_file_name(run_name)
     if debug_recorder is not None:
         debug_recorder.update(
             phase="saving_final_model",
@@ -760,22 +842,34 @@ def get_args():
     )
     parser.add_argument("--amp", action="store_true", default=False, help="Use mixed precision")
     parser.add_argument("--bilinear", action="store_true", default=False, help="Use bilinear upsampling")
-    parser.add_argument("--h5-file", type=str, default=str(dir_h5_spot_segmentation), help="Path to HDF5 file")
-    parser.add_argument("--log-dir", type=str, default=str(dir_runs), help="TensorBoard root log directory")
+    parser.add_argument("--paths-file", type=str, default=str(dir_paths_file), help="TOML file with training input/output paths")
+    parser.add_argument("--path-profile", type=str, default=default_path_profile, help="Path profile to read from --paths-file")
+    parser.add_argument("--h5-file", type=str, default=None, help="Override HDF5 input file from the selected path profile")
+    parser.add_argument("--checkpoint-dir", type=str, default=None, help="Override checkpoint directory from the selected path profile")
+    parser.add_argument("--log-dir", type=str, default=None, help="Override TensorBoard root log directory from the selected path profile")
     parser.add_argument("--run-name", type=str, default=None, help="Optional TensorBoard run name")
-    parser.add_argument("--preview-dir", type=str, default=str(dir_previews), help="Directory for saved prediction PNG previews")
+    parser.add_argument("--preview-dir", type=str, default=None, help="Override prediction preview directory from the selected path profile")
     parser.add_argument("--preview-samples", type=int, default=4, help="Number of validation previews to save per epoch")
-    parser.add_argument("--debug-dir", type=str, default=str(dir_debug), help="Directory for durable debug logs and heartbeat state")
+    parser.add_argument("--debug-dir", type=str, default=None, help="Override debug log directory from the selected path profile")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = get_args()
-    debug_log_file, state_file, debug_recorder = setup_logging(Path(args.debug_dir))
+    training_paths = apply_path_overrides(
+        args, load_training_paths(Path(args.paths_file), args.path_profile)
+    )
+    debug_log_file, state_file, debug_recorder = setup_logging(training_paths["debug_dir"])
     install_signal_logging(debug_recorder)
     debug_recorder.update(
         phase="arguments_parsed",
         command=" ".join(sys.argv),
+        path_profile=args.path_profile,
+        paths_file=str(args.paths_file),
+        h5_file=str(training_paths["h5_file"]),
+        checkpoint_dir=str(training_paths["checkpoint_dir"]),
+        log_dir=str(training_paths["log_dir"]),
+        preview_dir=str(training_paths["preview_dir"]),
         debug_log_file=str(debug_log_file),
         state_file=str(state_file),
     )
@@ -817,17 +911,18 @@ if __name__ == "__main__":
             train_model(
                 model=model,
                 device=device,
-                h5_file=Path(args.h5_file),
+                h5_file=training_paths["h5_file"],
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
                 img_scale=args.scale,
                 val_percent=args.val / 100,
                 amp=args.amp,
-                log_dir=Path(args.log_dir),
+                log_dir=training_paths["log_dir"],
                 run_name=args.run_name,
-                preview_dir=Path(args.preview_dir),
+                preview_dir=training_paths["preview_dir"],
                 preview_samples=args.preview_samples,
+                checkpoint_dir=training_paths["checkpoint_dir"],
                 debug_recorder=debug_recorder,
             )
         except torch.cuda.OutOfMemoryError as exc:
@@ -841,17 +936,18 @@ if __name__ == "__main__":
             train_model(
                 model=model,
                 device=device,
-                h5_file=Path(args.h5_file),
+                h5_file=training_paths["h5_file"],
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
                 img_scale=args.scale,
                 val_percent=args.val / 100,
                 amp=args.amp,
-                log_dir=Path(args.log_dir),
+                log_dir=training_paths["log_dir"],
                 run_name=args.run_name,
-                preview_dir=Path(args.preview_dir),
+                preview_dir=training_paths["preview_dir"],
                 preview_samples=args.preview_samples,
+                checkpoint_dir=training_paths["checkpoint_dir"],
                 debug_recorder=debug_recorder,
             )
     except Exception as exc:
