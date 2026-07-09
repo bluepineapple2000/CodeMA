@@ -19,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import optim
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, Subset, random_split
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -568,11 +568,21 @@ def train_model(
     preview_dir: Path = dir_previews,
     preview_samples: int = 4,
     checkpoint_dir: Path = dir_checkpoint,
+    max_samples: int | None = None,
     debug_recorder: TrainingDebugRecorder | None = None,
 ):
     if debug_recorder is not None:
         debug_recorder.update(status="running", phase="loading_dataset", h5_file=str(h5_file))
     dataset = H5SpotSeparationDataset(h5_file, img_scale)
+    if max_samples is not None:
+        if max_samples <= 0:
+            raise ValueError(f"--max-samples must be positive, got {max_samples}")
+        if max_samples < len(dataset):
+            indices = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(0))[:max_samples]
+            dataset = Subset(dataset, indices.tolist())
+            logging.info("Limited dataset to %d samples for this run", len(dataset))
+            if debug_recorder is not None:
+                debug_recorder.update(phase="dataset_limited", max_samples=max_samples, dataset_size=len(dataset))
 
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
@@ -605,6 +615,7 @@ def train_model(
             preview_dir=str(run_preview_dir),
             epochs=epochs,
             batch_size=batch_size,
+            max_samples=max_samples,
             learning_rate=learning_rate,
             device=device.type,
             amp=amp,
@@ -624,6 +635,7 @@ def train_model(
             "h5_file": str(h5_file),
             "run_name": run_name,
             "preview_samples": preview_samples,
+            "max_samples": max_samples or 0,
             "optimizer": "AdamW",
             "loss": "PI_one_spot_dice+0.25_foreground_l1+0.01_target_background",
         },
@@ -638,6 +650,7 @@ def train_model(
         Learning rate:   %s
         Training size:   %d
         Validation size: %d
+        Max samples:     %s
         Checkpoints:     %s
         Device:          %s
         Image scaling:   %s
@@ -649,6 +662,7 @@ def train_model(
         learning_rate,
         n_train,
         n_val,
+        max_samples if max_samples is not None else "all",
         save_checkpoint,
         device.type,
         img_scale,
@@ -850,6 +864,7 @@ def get_args():
     parser.add_argument("--run-name", type=str, default=None, help="Optional TensorBoard run name")
     parser.add_argument("--preview-dir", type=str, default=None, help="Override prediction preview directory from the selected path profile")
     parser.add_argument("--preview-samples", type=int, default=4, help="Number of validation previews to save per epoch")
+    parser.add_argument("--max-samples", type=int, default=None, help="Use only this many random samples from the HDF5 file for a debug run")
     parser.add_argument("--debug-dir", type=str, default=None, help="Override debug log directory from the selected path profile")
     return parser.parse_args()
 
@@ -872,6 +887,7 @@ if __name__ == "__main__":
         preview_dir=str(training_paths["preview_dir"]),
         debug_log_file=str(debug_log_file),
         state_file=str(state_file),
+        max_samples=args.max_samples,
     )
 
     try:
@@ -923,6 +939,7 @@ if __name__ == "__main__":
                 preview_dir=training_paths["preview_dir"],
                 preview_samples=args.preview_samples,
                 checkpoint_dir=training_paths["checkpoint_dir"],
+                max_samples=args.max_samples,
                 debug_recorder=debug_recorder,
             )
         except torch.cuda.OutOfMemoryError as exc:
@@ -948,6 +965,7 @@ if __name__ == "__main__":
                 preview_dir=training_paths["preview_dir"],
                 preview_samples=args.preview_samples,
                 checkpoint_dir=training_paths["checkpoint_dir"],
+                max_samples=args.max_samples,
                 debug_recorder=debug_recorder,
             )
     except Exception as exc:
