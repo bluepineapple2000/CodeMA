@@ -178,7 +178,7 @@ For a matched output channel, pixels are treated as follows:
 own spot pixel:       positive target
 true overlap pixel:   positive target for both spot channels
 other-spot-only pixel: false positive with high weight
-plain background:     false positive with very low weight
+plain background:     false positive with very low weightV
 ```
 
 The weighted Tversky score is:

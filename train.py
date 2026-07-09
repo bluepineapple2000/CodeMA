@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 import sys
+import tomllib
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -25,11 +26,91 @@ from tqdm import tqdm
 from unet_model import UNet
 
 
+dir_paths_file = Path("./training_paths.toml")
+default_path_profile = "twooutputs"
 dir_checkpoint = Path("./checkpoints/")
 dir_h5_spot_segmentation = Path("./data/augmented_spot_patches.h5")
 dir_runs = Path("./runs/")
 dir_previews = Path("./prediction_previews/")
 dir_debug = Path("./debug_logs/")
+
+
+def _resolve_config_path(path_value: str | Path, base_dir: Path) -> Path:
+    path = Path(path_value).expanduser()
+    if path.is_absolute():
+        return path
+    return base_dir / path
+
+
+def _profile_value(profile: dict, *names: str) -> str | None:
+    for name in names:
+        if name in profile:
+            return profile[name]
+    return None
+
+
+def load_training_paths(paths_file: Path, profile_name: str) -> dict[str, Path]:
+    paths_file = Path(paths_file)
+    paths = {
+        "h5_file": dir_h5_spot_segmentation,
+        "checkpoint_dir": dir_checkpoint,
+        "log_dir": dir_runs,
+        "preview_dir": dir_previews,
+        "debug_dir": dir_debug,
+    }
+    if not paths_file.exists():
+        return paths
+
+    config = tomllib.loads(paths_file.read_text())
+    if profile_name not in config:
+        available_profiles = ", ".join(sorted(config)) or "<none>"
+        raise ValueError(
+            f"Path profile {profile_name!r} not found in {paths_file}. "
+            f"Available profiles: {available_profiles}"
+        )
+
+    profile = config[profile_name]
+    base_dir = paths_file.parent
+    input_path = _profile_value(profile, "input_path", "inputpath", "h5_file")
+    output_path = _profile_value(profile, "output_path", "output")
+
+    if input_path is not None:
+        paths["h5_file"] = _resolve_config_path(input_path, base_dir)
+
+    if output_path is not None:
+        output_dir = _resolve_config_path(output_path, base_dir)
+        paths["checkpoint_dir"] = output_dir / "checkpoints"
+        paths["log_dir"] = output_dir / "runs"
+        paths["preview_dir"] = output_dir / "prediction_previews"
+        paths["debug_dir"] = output_dir / "debug_logs"
+
+    override_keys = {
+        "checkpoint_dir": ("checkpoint_dir", "checkpoint_path"),
+        "log_dir": ("log_dir", "runs_dir"),
+        "preview_dir": ("preview_dir",),
+        "debug_dir": ("debug_dir",),
+    }
+    for target_key, names in override_keys.items():
+        value = _profile_value(profile, *names)
+        if value is not None:
+            paths[target_key] = _resolve_config_path(value, base_dir)
+
+    return paths
+
+
+def apply_path_overrides(args, paths: dict[str, Path]) -> dict[str, Path]:
+    resolved = dict(paths)
+    cli_overrides = {
+        "h5_file": args.h5_file,
+        "checkpoint_dir": args.checkpoint_dir,
+        "log_dir": args.log_dir,
+        "preview_dir": args.preview_dir,
+        "debug_dir": args.debug_dir,
+    }
+    for key, value in cli_overrides.items():
+        if value is not None:
+            resolved[key] = Path(value).expanduser()
+    return resolved
 
 
 class TrainingDebugRecorder:
@@ -186,88 +267,38 @@ def spot_intensity_prediction(logits: torch.Tensor) -> torch.Tensor:
     return F.softplus(logits)
 
 
-def target_masks_from_intensity(
-    target: torch.Tensor,
-    foreground_threshold: float = 1e-4,
-) -> torch.Tensor:
-    return (target > foreground_threshold).to(dtype=target.dtype)
+def l1_loss_per_channel_pixel(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Absolute intensity difference for every sample, output channel, and pixel."""
+    return (prediction - target).abs()
 
 
-def predicted_presence_from_intensity(prediction: torch.Tensor) -> torch.Tensor:
-    # Targets are normalized to roughly [0, 1], so clamp intensity predictions into a soft mask range.
-    return prediction.clamp(0.0, 1.0)
+def l1_loss_per_pixel(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Mean absolute intensity difference at each pixel, averaged over output channels."""
+    return l1_loss_per_channel_pixel(prediction, target).mean(dim=1)
 
 
-def weighted_tversky_loss_per_sample(
+def l1_loss_per_sample(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Mean absolute pixel intensity difference for each sample."""
+    return l1_loss_per_channel_pixel(prediction, target).mean(dim=(1, 2, 3))
+
+
+def best_l1_assignment(
     prediction: torch.Tensor,
     target: torch.Tensor,
-    foreground_threshold: float = 1e-4,
-    alpha: float = 0.7,
-    beta: float = 0.3,
-    background_weight: float = 0.02,
-    wrong_spot_weight: float = 2.0,
-    smooth: float = 1.0,
-) -> torch.Tensor:
-    """Tversky mask loss for already matched two-channel predictions.
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Align predictions to targets by the lower two-channel L1 loss.
 
-    Own-spot and true overlap pixels are positives. Other-spot-only pixels are weighted
-    false positives. Plain background false positives are still visible but very weak.
+    Returns aligned predictions, per-channel pixel losses, and combined per-pixel losses.
     """
-    pred_mask = predicted_presence_from_intensity(prediction)
-    target_mask = target_masks_from_intensity(target, foreground_threshold=foreground_threshold)
-    other_mask = target_mask.flip(1)
-    other_only = (other_mask > 0.5) & (target_mask <= 0.5)
-    background = (other_mask <= 0.5) & (target_mask <= 0.5)
+    direct = l1_loss_per_sample(prediction, target)
+    swapped = l1_loss_per_sample(prediction, target.flip(1))
+    use_swapped = swapped < direct
 
-    false_positive_weights = torch.ones_like(pred_mask)
-    false_positive_weights = torch.where(
-        background,
-        torch.full_like(false_positive_weights, background_weight),
-        false_positive_weights,
-    )
-    false_positive_weights = torch.where(
-        other_only,
-        torch.full_like(false_positive_weights, wrong_spot_weight),
-        false_positive_weights,
-    )
-
-    true_positive = (pred_mask * target_mask).sum(dim=(2, 3))
-    false_positive = (pred_mask * (1.0 - target_mask) * false_positive_weights).sum(dim=(2, 3))
-    false_negative = ((1.0 - pred_mask) * target_mask).sum(dim=(2, 3))
-    score = (true_positive + smooth) / (
-        true_positive + alpha * false_positive + beta * false_negative + smooth
-    )
-    return 1.0 - score.mean(dim=1)
-
-
-def foreground_intensity_l1_per_sample(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    foreground_threshold: float = 1e-4,
-    overlap_weight: float = 0.5,
-) -> torch.Tensor:
-    """Intensity loss only where the matched target spot exists, including true overlap."""
-    target_mask = target_masks_from_intensity(target, foreground_threshold=foreground_threshold)
-    overlap = (target_mask > 0.5) & (target_mask.flip(1) > 0.5)
-    weights = torch.where(overlap, torch.full_like(target_mask, overlap_weight), target_mask)
-    error = (prediction - target).abs() * weights
-    return error.sum(dim=(1, 2, 3)) / weights.sum(dim=(1, 2, 3)).clamp_min(1.0)
-
-
-def matched_separation_loss_per_sample(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    mask_loss_weight: float = 1.0,
-    intensity_loss_weight: float = 0.2,
-) -> dict[str, torch.Tensor]:
-    mask = weighted_tversky_loss_per_sample(prediction, target)
-    intensity = foreground_intensity_l1_per_sample(prediction, target)
-    total = mask_loss_weight * mask + intensity_loss_weight * intensity
-    return {
-        "total": total,
-        "mask_tversky": mask,
-        "intensity": intensity,
-    }
+    aligned = prediction.clone()
+    aligned[use_swapped] = prediction[use_swapped].flip(1)
+    channel_loss = l1_loss_per_channel_pixel(aligned, target)
+    pixel_loss = channel_loss.mean(dim=1)
+    return aligned, channel_loss, pixel_loss
 
 
 def separation_loss_components(
@@ -276,14 +307,9 @@ def separation_loss_components(
     image: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
     del image  # Separation is supervised by the two target spot channels, not by reconstruction.
-    direct = matched_separation_loss_per_sample(prediction, target)
-    swapped = matched_separation_loss_per_sample(prediction, target.flip(1))
-    use_swapped = swapped["total"] < direct["total"]
-    selected = {
-        name: torch.where(use_swapped, swapped[name], direct[name]).mean()
-        for name in direct
-    }
-    return selected
+    direct = l1_loss_per_sample(prediction, target)
+    swapped = l1_loss_per_sample(prediction, target.flip(1))
+    return {"total": torch.minimum(direct, swapped).mean()}
 
 
 def separation_loss(
@@ -295,12 +321,7 @@ def separation_loss(
 
 
 def align_prediction_channels(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    direct = matched_separation_loss_per_sample(prediction, target)["total"]
-    swapped = matched_separation_loss_per_sample(prediction, target.flip(1))["total"]
-    use_swapped = swapped < direct
-    aligned = prediction.clone()
-    aligned[use_swapped] = prediction[use_swapped].flip(1)
-    return aligned
+    return best_l1_assignment(prediction, target)[0]
 
 
 def evaluate(model, dataloader, device, amp):
@@ -334,15 +355,24 @@ def save_prediction_previews(
     amp,
     output_dir: Path,
     epoch: int,
-    max_samples: int = 4,
+    max_samples: int = 5,
 ):
     if max_samples <= 0:
         return
 
+    dataset_size = len(dataloader.dataset)
+    if dataset_size <= 0:
+        return
+
     epoch_dir = output_dir / f"epoch_{epoch:03d}"
     epoch_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng()
+    selected_indices = set(
+        rng.choice(dataset_size, size=min(max_samples, dataset_size), replace=False).tolist()
+    )
     model.eval()
     saved = 0
+    seen = 0
 
     with torch.no_grad():
         for batch in dataloader:
@@ -353,41 +383,61 @@ def save_prediction_previews(
                 logits = model(images)
                 if logits.shape != targets.shape:
                     logits = F.interpolate(logits, size=targets.shape[2:], mode="bilinear", align_corners=False)
-                predictions = align_prediction_channels(spot_intensity_prediction(logits), targets)
+                predictions, channel_losses, pixel_losses = best_l1_assignment(
+                    spot_intensity_prediction(logits), targets
+                )
 
             batch_size = images.shape[0]
             for sample_idx in range(batch_size):
-                if saved >= max_samples:
-                    model.train()
-                    return
+                current_index = seen
+                seen += 1
+                if current_index not in selected_indices:
+                    continue
 
                 image = images[sample_idx, 0].detach().cpu().numpy()
                 true_spots = targets[sample_idx].detach().cpu().numpy()
                 pred_spots = predictions[sample_idx].detach().cpu().numpy()
+                channel_loss = channel_losses[sample_idx].detach().cpu().numpy()
+                pixel_loss = pixel_losses[sample_idx].detach().cpu().numpy()
                 true_sum = true_spots.sum(axis=0)
                 pred_sum = pred_spots.sum(axis=0)
-                error = np.abs(pred_sum - true_sum)
+                loss_vmax = max(float(channel_loss.max()), float(pixel_loss.max()), 1e-6)
 
-                fig, axes = plt.subplots(2, 4, figsize=(12, 6), constrained_layout=True)
+                fig, axes = plt.subplots(3, 4, figsize=(12, 9), constrained_layout=True)
                 panels = [
                     (image, "input", "gray", 0.0, 1.0),
                     (true_spots[0], "true spot 1", "gray", 0.0, 1.0),
                     (pred_spots[0], "pred spot 1", "gray", 0.0, 1.0),
-                    (np.abs(pred_spots[0] - true_spots[0]), "error spot 1", "magma", 0.0, 1.0),
+                    (channel_loss[0], "loss spot 1", "magma", 0.0, loss_vmax),
                     (true_sum, "true sum", "gray", 0.0, 1.0),
                     (true_spots[1], "true spot 2", "gray", 0.0, 1.0),
                     (pred_spots[1], "pred spot 2", "gray", 0.0, 1.0),
-                    (error, "sum error", "magma", 0.0, 1.0),
+                    (channel_loss[1], "loss spot 2", "magma", 0.0, loss_vmax),
+                    (pred_sum, "pred sum", "gray", 0.0, 1.0),
+                    (np.abs(pred_sum - true_sum), "sum error", "magma", 0.0, loss_vmax),
+                    (pixel_loss, "pixel loss", "magma", 0.0, loss_vmax),
+                    (pixel_loss > np.percentile(pixel_loss, 95), "top 5% loss", "gray", 0.0, 1.0),
                 ]
                 for axis, (data, title, cmap, vmin, vmax) in zip(axes.flat, panels):
                     axis.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
                     axis.set_title(title)
                     axis.axis("off")
 
-                file_name = epoch_dir / f"sample_{saved:02d}.png"
+                file_name = epoch_dir / f"sample_{saved:02d}_val_{current_index:05d}.png"
                 fig.savefig(file_name, dpi=150)
                 plt.close(fig)
+                np.savez_compressed(
+                    file_name.with_suffix(".npz"),
+                    image=image,
+                    true_spots=true_spots,
+                    pred_spots=pred_spots,
+                    channel_loss=channel_loss,
+                    pixel_loss=pixel_loss,
+                )
                 saved += 1
+                if saved >= len(selected_indices):
+                    model.train()
+                    return
 
     model.train()
 
@@ -419,7 +469,8 @@ def train_model(
     log_dir: Path = dir_runs,
     run_name: str | None = None,
     preview_dir: Path = dir_previews,
-    preview_samples: int = 4,
+    preview_samples: int = 5,
+    checkpoint_dir: Path = dir_checkpoint,
     debug_recorder: TrainingDebugRecorder | None = None,
 ):
     if debug_recorder is not None:
@@ -477,7 +528,7 @@ def train_model(
             "run_name": run_name,
             "preview_samples": preview_samples,
             "optimizer": "AdamW",
-            "loss": "PI_weighted_tversky_mask+0.2_foreground_intensity_l1",
+            "loss": "PI_full_image_l1",
         },
         {"hparam/metric": 0},
     )
@@ -563,23 +614,10 @@ def train_model(
                         batches_per_epoch=len(train_loader),
                         global_step=global_step,
                     )
-                loss_values = (
-                    torch.stack(
-                        (
-                            loss_parts["total"],
-                            loss_parts["mask_tversky"],
-                            loss_parts["intensity"],
-                        )
-                    )
-                    .detach()
-                    .cpu()
-                    .tolist()
-                )
-                total_loss, mask_tversky_loss, intensity_loss = loss_values
+                total_loss = loss_parts["total"].detach().cpu().item()
                 epoch_loss += total_loss
                 writer.add_scalar("Loss/train_batch", total_loss, global_step)
-                writer.add_scalar("Loss_parts/train_mask_tversky", mask_tversky_loss, global_step)
-                writer.add_scalar("Loss_parts/train_intensity", intensity_loss, global_step)
+                writer.add_scalar("Loss_parts/train_l1", total_loss, global_step)
                 pbar.set_postfix(**{"loss (batch)": total_loss})
 
                 division_step = n_train // (5 * batch_size)
@@ -652,12 +690,12 @@ def train_model(
         if save_checkpoint:
             if debug_recorder is not None:
                 debug_recorder.update(phase="saving_checkpoint", epoch=epoch, epochs=epochs, global_step=global_step)
-            dir_checkpoint.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), str(dir_checkpoint / f"checkpoint_epoch{epoch}.pth"))
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(model.state_dict(), str(checkpoint_dir / f"checkpoint_epoch{epoch}.pth"))
             logging.info("Checkpoint %d saved!", epoch)
 
-    dir_checkpoint.mkdir(parents=True, exist_ok=True)
-    final_model_file = dir_checkpoint / safe_model_file_name(run_name)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    final_model_file = checkpoint_dir / safe_model_file_name(run_name)
     if debug_recorder is not None:
         debug_recorder.update(
             phase="saving_final_model",
@@ -696,22 +734,34 @@ def get_args():
     )
     parser.add_argument("--amp", action="store_true", default=False, help="Use mixed precision")
     parser.add_argument("--bilinear", action="store_true", default=False, help="Use bilinear upsampling")
-    parser.add_argument("--h5-file", type=str, default=str(dir_h5_spot_segmentation), help="Path to HDF5 file")
-    parser.add_argument("--log-dir", type=str, default=str(dir_runs), help="TensorBoard root log directory")
+    parser.add_argument("--paths-file", type=str, default=str(dir_paths_file), help="TOML file with training input/output paths")
+    parser.add_argument("--path-profile", type=str, default=default_path_profile, help="Path profile to read from --paths-file")
+    parser.add_argument("--h5-file", type=str, default=None, help="Override HDF5 input file from the selected path profile")
+    parser.add_argument("--checkpoint-dir", type=str, default=None, help="Override checkpoint directory from the selected path profile")
+    parser.add_argument("--log-dir", type=str, default=None, help="Override TensorBoard root log directory from the selected path profile")
     parser.add_argument("--run-name", type=str, default=None, help="Optional TensorBoard run name")
-    parser.add_argument("--preview-dir", type=str, default=str(dir_previews), help="Directory for saved prediction PNG previews")
-    parser.add_argument("--preview-samples", type=int, default=4, help="Number of validation previews to save per epoch")
-    parser.add_argument("--debug-dir", type=str, default=str(dir_debug), help="Directory for durable debug logs and heartbeat state")
+    parser.add_argument("--preview-dir", type=str, default=None, help="Override prediction preview directory from the selected path profile")
+    parser.add_argument("--preview-samples", type=int, default=5, help="Number of random validation previews to save per epoch")
+    parser.add_argument("--debug-dir", type=str, default=None, help="Override debug log directory from the selected path profile")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = get_args()
-    debug_log_file, state_file, debug_recorder = setup_logging(Path(args.debug_dir))
+    training_paths = apply_path_overrides(
+        args, load_training_paths(Path(args.paths_file), args.path_profile)
+    )
+    debug_log_file, state_file, debug_recorder = setup_logging(training_paths["debug_dir"])
     install_signal_logging(debug_recorder)
     debug_recorder.update(
         phase="arguments_parsed",
         command=" ".join(sys.argv),
+        path_profile=args.path_profile,
+        paths_file=str(args.paths_file),
+        h5_file=str(training_paths["h5_file"]),
+        checkpoint_dir=str(training_paths["checkpoint_dir"]),
+        log_dir=str(training_paths["log_dir"]),
+        preview_dir=str(training_paths["preview_dir"]),
         debug_log_file=str(debug_log_file),
         state_file=str(state_file),
     )
@@ -744,17 +794,18 @@ if __name__ == "__main__":
             train_model(
                 model=model,
                 device=device,
-                h5_file=Path(args.h5_file),
+                h5_file=training_paths["h5_file"],
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
                 img_scale=args.scale,
                 val_percent=args.val / 100,
                 amp=args.amp,
-                log_dir=Path(args.log_dir),
+                log_dir=training_paths["log_dir"],
                 run_name=args.run_name,
-                preview_dir=Path(args.preview_dir),
+                preview_dir=training_paths["preview_dir"],
                 preview_samples=args.preview_samples,
+                checkpoint_dir=training_paths["checkpoint_dir"],
                 debug_recorder=debug_recorder,
             )
         except torch.cuda.OutOfMemoryError as exc:
@@ -768,17 +819,18 @@ if __name__ == "__main__":
             train_model(
                 model=model,
                 device=device,
-                h5_file=Path(args.h5_file),
+                h5_file=training_paths["h5_file"],
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
                 img_scale=args.scale,
                 val_percent=args.val / 100,
                 amp=args.amp,
-                log_dir=Path(args.log_dir),
+                log_dir=training_paths["log_dir"],
                 run_name=args.run_name,
-                preview_dir=Path(args.preview_dir),
+                preview_dir=training_paths["preview_dir"],
                 preview_samples=args.preview_samples,
+                checkpoint_dir=training_paths["checkpoint_dir"],
                 debug_recorder=debug_recorder,
             )
     except Exception as exc:

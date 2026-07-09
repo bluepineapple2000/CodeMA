@@ -3,3 +3,4 @@ __pycache__/
 data/
 prediction_previews/
 runs/
+serverdaten/
