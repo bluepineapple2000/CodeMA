@@ -1,0 +1,11 @@
+[twooutputs]
+input_path = "./data/augmented_spot_patches.h5"
+output_path = "./output/twooutput"
+
+[oneoutput]
+input_path = "./data/augmented_spot_patches.h5"
+output_path = "./output/oneoutput"
+
+[pin]
+input_path = "./data/augmented_spot_patches.h5"
+output_path = "./output/pin"

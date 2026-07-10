@@ -19,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import optim
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, Subset, random_split
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -57,6 +57,7 @@ def load_training_paths(paths_file: Path, profile_name: str) -> dict[str, Path]:
         "log_dir": dir_runs,
         "preview_dir": dir_previews,
         "debug_dir": dir_debug,
+        "train_path": Path(__file__).resolve(),
     }
     if not paths_file.exists():
         return paths
@@ -73,6 +74,7 @@ def load_training_paths(paths_file: Path, profile_name: str) -> dict[str, Path]:
     base_dir = paths_file.parent
     input_path = _profile_value(profile, "input_path", "inputpath", "h5_file")
     output_path = _profile_value(profile, "output_path", "output")
+    train_path = _profile_value(profile, "train_path", "train_file")
 
     if input_path is not None:
         paths["h5_file"] = _resolve_config_path(input_path, base_dir)
@@ -83,6 +85,9 @@ def load_training_paths(paths_file: Path, profile_name: str) -> dict[str, Path]:
         paths["log_dir"] = output_dir / "runs"
         paths["preview_dir"] = output_dir / "prediction_previews"
         paths["debug_dir"] = output_dir / "debug_logs"
+
+    if train_path is not None:
+        paths["train_path"] = _resolve_config_path(train_path, base_dir)
 
     override_keys = {
         "checkpoint_dir": ("checkpoint_dir", "checkpoint_path"),
@@ -106,6 +111,7 @@ def apply_path_overrides(args, paths: dict[str, Path]) -> dict[str, Path]:
         "log_dir": args.log_dir,
         "preview_dir": args.preview_dir,
         "debug_dir": args.debug_dir,
+        "train_path": args.train_path,
     }
     for key, value in cli_overrides.items():
         if value is not None:
@@ -324,6 +330,43 @@ def align_prediction_channels(prediction: torch.Tensor, target: torch.Tensor) ->
     return best_l1_assignment(prediction, target)[0]
 
 
+def save_loss_detail_preview(
+    file_name: Path,
+    image: np.ndarray,
+    channel_loss: np.ndarray,
+    pixel_loss: np.ndarray,
+    sum_error: np.ndarray,
+    loss_vmax: float,
+) -> None:
+    """Save a focused loss-map PNG with colorbars for per-pixel L1 errors."""
+    threshold = np.percentile(pixel_loss, 95)
+    top_loss_mask = pixel_loss > threshold
+    mean_loss = float(pixel_loss.mean())
+    max_loss = float(pixel_loss.max())
+
+    fig, axes = plt.subplots(2, 3, figsize=(12, 8), constrained_layout=True)
+    panels = [
+        (image, "input image", "gray", 0.0, 1.0, None),
+        (channel_loss[0], f"spot 1 loss\nmean={channel_loss[0].mean():.4f}", "magma", 0.0, loss_vmax, "absolute L1 error"),
+        (channel_loss[1], f"spot 2 loss\nmean={channel_loss[1].mean():.4f}", "magma", 0.0, loss_vmax, "absolute L1 error"),
+        (sum_error, f"sum error\nmean={sum_error.mean():.4f}", "magma", 0.0, loss_vmax, "absolute intensity error"),
+        (pixel_loss, f"pixel loss avg over spots\nmean={mean_loss:.4f}, max={max_loss:.4f}", "magma", 0.0, loss_vmax, "absolute L1 error"),
+        (top_loss_mask, f"top 5% pixel loss\nthreshold>{threshold:.4f}", "gray", 0.0, 1.0, None),
+    ]
+
+    for axis, (data, title, cmap, vmin, vmax, colorbar_label) in zip(axes.flat, panels):
+        image_artist = axis.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
+        axis.set_title(title)
+        axis.axis("off")
+        if colorbar_label is not None:
+            colorbar = fig.colorbar(image_artist, ax=axis, fraction=0.046, pad=0.04)
+            colorbar.set_label(colorbar_label)
+
+    fig.suptitle("Per-pixel L1 loss: dark = small error, bright = large error", fontsize=12)
+    fig.savefig(file_name, dpi=150)
+    plt.close(fig)
+
+
 def evaluate(model, dataloader, device, amp):
     model.eval()
     losses = []
@@ -401,7 +444,8 @@ def save_prediction_previews(
                 pixel_loss = pixel_losses[sample_idx].detach().cpu().numpy()
                 true_sum = true_spots.sum(axis=0)
                 pred_sum = pred_spots.sum(axis=0)
-                loss_vmax = max(float(channel_loss.max()), float(pixel_loss.max()), 1e-6)
+                sum_error = np.abs(pred_sum - true_sum)
+                loss_vmax = max(float(channel_loss.max()), float(pixel_loss.max()), float(sum_error.max()), 1e-6)
 
                 fig, axes = plt.subplots(3, 4, figsize=(12, 9), constrained_layout=True)
                 panels = [
@@ -414,7 +458,7 @@ def save_prediction_previews(
                     (pred_spots[1], "pred spot 2", "gray", 0.0, 1.0),
                     (channel_loss[1], "loss spot 2", "magma", 0.0, loss_vmax),
                     (pred_sum, "pred sum", "gray", 0.0, 1.0),
-                    (np.abs(pred_sum - true_sum), "sum error", "magma", 0.0, loss_vmax),
+                    (sum_error, "sum error", "magma", 0.0, loss_vmax),
                     (pixel_loss, "pixel loss", "magma", 0.0, loss_vmax),
                     (pixel_loss > np.percentile(pixel_loss, 95), "top 5% loss", "gray", 0.0, 1.0),
                 ]
@@ -426,6 +470,16 @@ def save_prediction_previews(
                 file_name = epoch_dir / f"sample_{saved:02d}_val_{current_index:05d}.png"
                 fig.savefig(file_name, dpi=150)
                 plt.close(fig)
+
+                loss_file_name = epoch_dir / f"sample_{saved:02d}_val_{current_index:05d}_loss.png"
+                save_loss_detail_preview(
+                    loss_file_name,
+                    image=image,
+                    channel_loss=channel_loss,
+                    pixel_loss=pixel_loss,
+                    sum_error=sum_error,
+                    loss_vmax=loss_vmax,
+                )
                 np.savez_compressed(
                     file_name.with_suffix(".npz"),
                     image=image,
@@ -433,6 +487,7 @@ def save_prediction_previews(
                     pred_spots=pred_spots,
                     channel_loss=channel_loss,
                     pixel_loss=pixel_loss,
+                    sum_error=sum_error,
                 )
                 saved += 1
                 if saved >= len(selected_indices):
@@ -471,11 +526,21 @@ def train_model(
     preview_dir: Path = dir_previews,
     preview_samples: int = 5,
     checkpoint_dir: Path = dir_checkpoint,
+    max_samples: int | None = None,
     debug_recorder: TrainingDebugRecorder | None = None,
 ):
     if debug_recorder is not None:
         debug_recorder.update(status="running", phase="loading_dataset", h5_file=str(h5_file))
     dataset = H5SpotSeparationDataset(h5_file, img_scale)
+    if max_samples is not None:
+        if max_samples <= 0:
+            raise ValueError(f"--max-samples must be positive, got {max_samples}")
+        if max_samples < len(dataset):
+            indices = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(0))[:max_samples]
+            dataset = Subset(dataset, indices.tolist())
+            logging.info("Limited dataset to %d samples for this run", len(dataset))
+            if debug_recorder is not None:
+                debug_recorder.update(phase="dataset_limited", max_samples=max_samples, dataset_size=len(dataset))
 
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
@@ -508,6 +573,7 @@ def train_model(
             preview_dir=str(run_preview_dir),
             epochs=epochs,
             batch_size=batch_size,
+            max_samples=max_samples,
             learning_rate=learning_rate,
             device=device.type,
             amp=amp,
@@ -527,6 +593,7 @@ def train_model(
             "h5_file": str(h5_file),
             "run_name": run_name,
             "preview_samples": preview_samples,
+            "max_samples": max_samples or 0,
             "optimizer": "AdamW",
             "loss": "PI_full_image_l1",
         },
@@ -541,6 +608,7 @@ def train_model(
         Learning rate:   %s
         Training size:   %d
         Validation size: %d
+        Max samples:     %s
         Checkpoints:     %s
         Device:          %s
         Image scaling:   %s
@@ -552,6 +620,7 @@ def train_model(
         learning_rate,
         n_train,
         n_val,
+        max_samples if max_samples is not None else "all",
         save_checkpoint,
         device.type,
         img_scale,
@@ -737,11 +806,13 @@ def get_args():
     parser.add_argument("--paths-file", type=str, default=str(dir_paths_file), help="TOML file with training input/output paths")
     parser.add_argument("--path-profile", type=str, default=default_path_profile, help="Path profile to read from --paths-file")
     parser.add_argument("--h5-file", type=str, default=None, help="Override HDF5 input file from the selected path profile")
+    parser.add_argument("--train-path", type=str, default=None, help="Override train.py path recorded from the selected path profile")
     parser.add_argument("--checkpoint-dir", type=str, default=None, help="Override checkpoint directory from the selected path profile")
     parser.add_argument("--log-dir", type=str, default=None, help="Override TensorBoard root log directory from the selected path profile")
     parser.add_argument("--run-name", type=str, default=None, help="Optional TensorBoard run name")
     parser.add_argument("--preview-dir", type=str, default=None, help="Override prediction preview directory from the selected path profile")
     parser.add_argument("--preview-samples", type=int, default=5, help="Number of random validation previews to save per epoch")
+    parser.add_argument("--max-samples", type=int, default=None, help="Use only this many random samples from the HDF5 file for a debug run")
     parser.add_argument("--debug-dir", type=str, default=None, help="Override debug log directory from the selected path profile")
     return parser.parse_args()
 
@@ -762,8 +833,10 @@ if __name__ == "__main__":
         checkpoint_dir=str(training_paths["checkpoint_dir"]),
         log_dir=str(training_paths["log_dir"]),
         preview_dir=str(training_paths["preview_dir"]),
+        train_path=str(training_paths["train_path"]),
         debug_log_file=str(debug_log_file),
         state_file=str(state_file),
+        max_samples=args.max_samples,
     )
 
     try:
@@ -806,6 +879,7 @@ if __name__ == "__main__":
                 preview_dir=training_paths["preview_dir"],
                 preview_samples=args.preview_samples,
                 checkpoint_dir=training_paths["checkpoint_dir"],
+                max_samples=args.max_samples,
                 debug_recorder=debug_recorder,
             )
         except torch.cuda.OutOfMemoryError as exc:
@@ -831,6 +905,7 @@ if __name__ == "__main__":
                 preview_dir=training_paths["preview_dir"],
                 preview_samples=args.preview_samples,
                 checkpoint_dir=training_paths["checkpoint_dir"],
+                max_samples=args.max_samples,
                 debug_recorder=debug_recorder,
             )
     except Exception as exc:
