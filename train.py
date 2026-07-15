@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 import sys
+import tomllib
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -29,7 +30,27 @@ dir_checkpoint = Path("./checkpoints/")
 dir_h5_spot_segmentation = Path("./data/augmented_spot_patches_with_masks.h5")
 dir_runs = Path("./runs/")
 dir_previews = Path("./prediction_previews/")
+dir_loss_diagnostics = Path("./loss_diagnostics/")
 dir_debug = Path("./debug_logs/")
+dir_project_paths = Path("./project_paths.toml")
+
+
+def load_project_paths(paths_file: Path) -> dict:
+    if not paths_file.exists():
+        return {}
+    with paths_file.open("rb") as file:
+        return tomllib.load(file)
+
+
+def configured_input_h5(paths_file: Path) -> Path:
+    config = load_project_paths(paths_file)
+    input_h5 = config.get("data", {}).get("input_h5")
+    if input_h5 is None:
+        return dir_h5_spot_segmentation
+    input_path = Path(input_h5).expanduser()
+    if input_path.is_absolute():
+        return input_path
+    return paths_file.parent / input_pathsasdfil
 
 
 class TrainingDebugRecorder:
@@ -219,24 +240,62 @@ def soft_dice_per_sample(
     return numerator / denominator
 
 
-def masked_mse_loss_per_spot(
+def weighted_tversky_loss_per_spot(
     prediction: torch.Tensor,
     target: torch.Tensor,
-    mask_prediction: torch.Tensor,
+    alpha: float = 0.7,
+    beta: float = 0.3,
+    background_weight: float = 0.02,
+    wrong_spot_weight: float = 2.0,
+    smooth: float = 1.0,
 ) -> torch.Tensor:
-    """Mean squared intensity error inside each predicted spot mask."""
-    predicted_foreground = (mask_prediction > 0.5).to(dtype=prediction.dtype)
-    squared_error = (prediction - target).square() * predicted_foreground
-    return squared_error.sum(dim=(0, 2, 3)) / predicted_foreground.sum(dim=(0, 2, 3)).clamp_min(1.0)
+    """Weighted Tversky mask loss for already matched two-channel masks."""
+    pred_mask = prediction.clamp(0.0, 1.0)
+    target_mask = (target > 0.5).to(dtype=target.dtype)
+    other_mask = target_mask.flip(1)
+    other_only = (other_mask > 0.5) & (target_mask <= 0.5)
+    background = (other_mask <= 0.5) & (target_mask <= 0.5)
+
+    false_positive_weights = torch.ones_like(pred_mask)
+    false_positive_weights = torch.where(
+        background,
+        torch.full_like(false_positive_weights, background_weight),
+        false_positive_weights,
+    )
+    false_positive_weights = torch.where(
+        other_only,
+        torch.full_like(false_positive_weights, wrong_spot_weight),
+        false_positive_weights,
+    )
+
+    true_positive = (pred_mask * target_mask).sum(dim=(2, 3))
+    false_positive = (pred_mask * (1.0 - target_mask) * false_positive_weights).sum(dim=(2, 3))
+    false_negative = ((1.0 - pred_mask) * target_mask).sum(dim=(2, 3))
+    score = (true_positive + smooth) / (
+        true_positive + alpha * false_positive + beta * false_negative + smooth
+    )
+    return 1.0 - score
 
 
-def mask_bce_loss_per_spot(
-    mask_logits: torch.Tensor,
+def matched_separation_loss_per_sample(
+    outputs: dict[str, torch.Tensor],
+    target: torch.Tensor,
     mask_target: torch.Tensor,
-) -> torch.Tensor:
-    """Binary cross entropy for each of the two matched spot masks."""
-    bce = F.binary_cross_entropy_with_logits(mask_logits, mask_target, reduction="none")
-    return bce.mean(dim=(0, 2, 3))
+) -> dict[str, torch.Tensor]:
+    mask_losses = weighted_tversky_loss_per_spot(outputs["masks"], mask_target)
+    intensity_losses = (outputs["intensities"] - target).abs().mean(dim=(2, 3))
+    mask_loss = mask_losses.mean(dim=1)
+    intensity_loss = intensity_losses.mean(dim=1)
+    total = mask_loss + intensity_loss
+    return {
+        "total": total,
+        "mask_tversky": mask_loss,
+        "intensity_l1": intensity_loss,
+        "mask_1": mask_losses[:, 0],
+        "mask_2": mask_losses[:, 1],
+        "intensity_1": intensity_losses[:, 0],
+        "intensity_2": intensity_losses[:, 1],
+    }
 
 
 def separation_loss_components(
@@ -244,24 +303,12 @@ def separation_loss_components(
     target: torch.Tensor,
     mask_target: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
-    prediction = outputs["intensities"]
-    mask_prediction = outputs["masks"]
-    mask_logits = outputs["mask_logits"]
-
-    mask_losses = mask_bce_loss_per_spot(mask_logits, mask_target)
-    intensity_losses = masked_mse_loss_per_spot(prediction, target, mask_prediction)
-    total = (
-        mask_losses[0]
-        + mask_losses[1]
-        + intensity_losses[0]
-        + intensity_losses[1]
-    )
+    direct = matched_separation_loss_per_sample(outputs, target, mask_target)
+    swapped = matched_separation_loss_per_sample(outputs, target.flip(1), mask_target.flip(1))
+    use_swapped = swapped["total"] < direct["total"]
     return {
-        "total": total,
-        "mask_1": mask_losses[0],
-        "mask_2": mask_losses[1],
-        "intensity_1": intensity_losses[0],
-        "intensity_2": intensity_losses[1],
+        name: torch.where(use_swapped, swapped[name], direct[name]).mean()
+        for name in direct
     }
 
 
@@ -272,10 +319,20 @@ def separation_metric_tensors(
 ) -> dict[str, torch.Tensor]:
     mask_prediction = outputs["masks"]
     loss_parts = separation_loss_components(outputs, target, mask_target)
-    per_spot_mask_dice = soft_dice_per_sample(mask_prediction, mask_target)
+    direct = matched_separation_loss_per_sample(outputs, target, mask_target)
+    swapped = matched_separation_loss_per_sample(outputs, target.flip(1), mask_target.flip(1))
+    use_swapped = swapped["total"] < direct["total"]
+    matched_mask_target = torch.where(
+        use_swapped[:, None, None, None],
+        mask_target.flip(1),
+        mask_target,
+    )
+    per_spot_mask_dice = soft_dice_per_sample(mask_prediction, matched_mask_target)
 
     return {
         "loss_total": loss_parts["total"],
+        "loss_mask_tversky": loss_parts["mask_tversky"],
+        "loss_intensity_l1": loss_parts["intensity_l1"],
         "loss_mask_1": loss_parts["mask_1"],
         "loss_mask_2": loss_parts["mask_2"],
         "loss_intensity_1": loss_parts["intensity_1"],
@@ -333,6 +390,151 @@ def evaluate(model, dataloader, device, amp):
     model.train()
     return average_metric_dicts(metric_dicts)
 
+
+
+
+def separation_pixel_loss_maps(
+    outputs: dict[str, torch.Tensor],
+    target: torch.Tensor,
+    mask_target: torch.Tensor,
+    alpha: float = 0.7,
+    beta: float = 0.3,
+    background_weight: float = 0.02,
+    wrong_spot_weight: float = 2.0,
+) -> dict[str, torch.Tensor]:
+    """Pixelwise diagnostic map matching the weighted mask/L1 loss ingredients."""
+    pred_mask = outputs["masks"].clamp(0.0, 1.0)
+    target_mask = (mask_target > 0.5).to(dtype=mask_target.dtype)
+    other_mask = target_mask.flip(1)
+    other_only = (other_mask > 0.5) & (target_mask <= 0.5)
+    background = (other_mask <= 0.5) & (target_mask <= 0.5)
+
+    false_positive_weights = torch.ones_like(pred_mask)
+    false_positive_weights = torch.where(
+        background,
+        torch.full_like(false_positive_weights, background_weight),
+        false_positive_weights,
+    )
+    false_positive_weights = torch.where(
+        other_only,
+        torch.full_like(false_positive_weights, wrong_spot_weight),
+        false_positive_weights,
+    )
+
+    false_positive_map = pred_mask * (1.0 - target_mask) * false_positive_weights
+    false_negative_map = (1.0 - pred_mask) * target_mask
+    mask_map = alpha * false_positive_map + beta * false_negative_map
+    intensity_map = (outputs["intensities"] - target).abs()
+    total_map = mask_map.mean(dim=1) + intensity_map.mean(dim=1)
+    return {
+        "total": total_map,
+        "mask": mask_map.mean(dim=1),
+        "intensity": intensity_map.mean(dim=1),
+    }
+
+
+def matched_separation_pixel_loss_maps(
+    outputs: dict[str, torch.Tensor],
+    target: torch.Tensor,
+    mask_target: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    direct = matched_separation_loss_per_sample(outputs, target, mask_target)
+    swapped = matched_separation_loss_per_sample(outputs, target.flip(1), mask_target.flip(1))
+    use_swapped = swapped["total"] < direct["total"]
+
+    direct_maps = separation_pixel_loss_maps(outputs, target, mask_target)
+    swapped_maps = separation_pixel_loss_maps(outputs, target.flip(1), mask_target.flip(1))
+    return {
+        name: torch.where(use_swapped[:, None, None], swapped_maps[name], direct_maps[name])
+        for name in direct_maps
+    }
+
+
+def save_loss_diagnostic(
+    model,
+    dataloader,
+    device,
+    amp,
+    output_dir: Path,
+    epoch: int,
+):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model.eval()
+    best = None
+
+    with torch.no_grad():
+        for batch in dataloader:
+            images = batch["image"].to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+            targets = batch["target"].to(device=device, dtype=torch.float32)
+            masks = batch["mask"].to(device=device, dtype=torch.float32)
+
+            with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
+                logits = model(images)
+                if logits.shape[2:] != targets.shape[2:]:
+                    logits = F.interpolate(logits, size=targets.shape[2:], mode="bilinear", align_corners=False)
+                outputs = spot_separation_prediction(logits)
+                pixel_maps = matched_separation_pixel_loss_maps(outputs, targets, masks)
+
+            total_maps = pixel_maps["total"]
+            flat_values = total_maps.flatten(start_dim=1)
+            sample_values, flat_indices = flat_values.max(dim=1)
+            batch_best_idx = int(sample_values.argmax().detach().cpu().item())
+            batch_best_value = float(sample_values[batch_best_idx].detach().cpu().item())
+            if best is not None and batch_best_value <= best["value"]:
+                continue
+
+            height, width = total_maps.shape[-2:]
+            del height
+            flat_index = int(flat_indices[batch_best_idx].detach().cpu().item())
+            row, col = divmod(flat_index, width)
+            best = {
+                "value": batch_best_value,
+                "row": row,
+                "col": col,
+                "image": images[batch_best_idx, 0].detach().cpu().numpy(),
+                "target_sum": targets[batch_best_idx].sum(dim=0).detach().cpu().numpy(),
+                "prediction_sum": outputs["intensities"][batch_best_idx].sum(dim=0).detach().cpu().numpy(),
+                "total_map": pixel_maps["total"][batch_best_idx].detach().cpu().numpy(),
+                "mask_map": pixel_maps["mask"][batch_best_idx].detach().cpu().numpy(),
+                "intensity_map": pixel_maps["intensity"][batch_best_idx].detach().cpu().numpy(),
+            }
+
+    if best is None:
+        model.train()
+        return
+
+    fig, axes = plt.subplots(2, 3, figsize=(12, 8), constrained_layout=True)
+    panels = [
+        (best["image"], "input", "gray", None),
+        (best["total_map"], f"total pixel loss max={best['value']:.4g}", "magma", "loss"),
+        (best["mask_map"], "weighted mask error", "magma", "mask"),
+        (best["target_sum"], "target intensity sum", "gray", None),
+        (best["prediction_sum"], "predicted intensity sum", "gray", None),
+        (best["intensity_map"], "intensity L1 error", "magma", "L1"),
+    ]
+    for axis, (data, title, cmap, colorbar_label) in zip(axes.flat, panels):
+        image = axis.imshow(data, cmap=cmap)
+        axis.scatter([best["col"]], [best["row"]], s=90, facecolors="none", edgecolors="cyan", linewidths=1.8)
+        axis.set_title(title)
+        axis.set_xlabel(f"max pixel: row {best['row']}, col {best['col']}")
+        axis.set_xticks([])
+        axis.set_yticks([])
+        if colorbar_label is not None:
+            colorbar = fig.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
+            colorbar.set_label(colorbar_label)
+
+    file_name = output_dir / f"epoch_{epoch:03d}_loss_diagnostic.png"
+    fig.savefig(file_name, dpi=150)
+    plt.close(fig)
+    logging.info(
+        "Saved loss diagnostic for epoch %d to %s; max pixel row=%d col=%d value=%s",
+        epoch,
+        file_name,
+        best["row"],
+        best["col"],
+        best["value"],
+    )
+    model.train()
 
 def save_prediction_previews(
     model,
@@ -439,6 +641,8 @@ def train_model(
     run_name: str | None = None,
     preview_dir: Path = dir_previews,
     preview_samples: int = 4,
+    loss_diagnostic_dir: Path = dir_loss_diagnostics,
+    loss_diagnostic_interval: int = 50,
     debug_recorder: TrainingDebugRecorder | None = None,
 ):
     if debug_recorder is not None:
@@ -468,12 +672,15 @@ def train_model(
     run_dir = Path(log_dir) / run_name
     writer = SummaryWriter(log_dir=str(run_dir))
     run_preview_dir = Path(preview_dir) / run_name
+    run_loss_diagnostic_dir = Path(loss_diagnostic_dir) / run_name
     if debug_recorder is not None:
         debug_recorder.update(
             phase="run_initialized",
             run_name=run_name,
             run_dir=str(run_dir),
             preview_dir=str(run_preview_dir),
+            loss_diagnostic_dir=str(run_loss_diagnostic_dir),
+            loss_diagnostic_interval=loss_diagnostic_interval,
             epochs=epochs,
             batch_size=batch_size,
             learning_rate=learning_rate,
@@ -482,6 +689,7 @@ def train_model(
         )
     logging.info("TensorBoard log directory: %s", run_dir)
     logging.info("Prediction preview directory: %s", run_preview_dir)
+    logging.info("Loss diagnostic directory: %s", run_loss_diagnostic_dir)
     logging.info("Open TensorBoard with: tensorboard --logdir %s", Path(log_dir))
     writer.add_hparams(
         {
@@ -495,8 +703,9 @@ def train_model(
             "h5_file": str(h5_file),
             "run_name": run_name,
             "preview_samples": preview_samples,
+            "loss_diagnostic_interval": loss_diagnostic_interval,
             "optimizer": "AdamW",
-            "loss": "BCE(mask_1)+BCE(mask_2)+pred_masked_MSE(intensity_1)+pred_masked_MSE(intensity_2)",
+            "loss": "permutation_invariant_weighted_Tversky(masks)+L1(intensities)",
         },
         {"hparam/metric": 0},
     )
@@ -532,7 +741,7 @@ def train_model(
         weight_decay=weight_decay,
         foreach=True,
     )
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=200)
     grad_scaler = torch.amp.GradScaler(device.type, enabled=amp)
     global_step = 0
 
@@ -650,6 +859,22 @@ def train_model(
             epoch,
             max_samples=preview_samples,
         )
+        if loss_diagnostic_interval > 0 and epoch % loss_diagnostic_interval == 0:
+            if debug_recorder is not None:
+                debug_recorder.update(
+                    phase="saving_loss_diagnostic",
+                    epoch=epoch,
+                    epochs=epochs,
+                    global_step=global_step,
+                )
+            save_loss_diagnostic(
+                model,
+                val_loader,
+                device,
+                amp,
+                run_loss_diagnostic_dir,
+                epoch,
+            )
         writer.add_scalar("Loss/train_epoch", mean_epoch_loss, epoch)
         writer.add_scalar("Loss/validation_epoch", val_score, epoch)
         log_metrics(writer, "train_epoch", train_metrics, epoch)
@@ -714,17 +939,42 @@ def get_args():
     )
     parser.add_argument("--amp", action="store_true", default=False, help="Use mixed precision")
     parser.add_argument("--bilinear", action="store_true", default=False, help="Use bilinear upsampling")
-    parser.add_argument("--h5-file", type=str, default=str(dir_h5_spot_segmentation), help="Path to HDF5 file")
+    parser.add_argument(
+        "--paths-file",
+        type=str,
+        default=str(dir_project_paths),
+        help="Path to TOML file with project paths",
+    )
+    parser.add_argument(
+        "--h5-file",
+        type=str,
+        default=None,
+        help="Override input HDF5 file from project_paths.toml",
+    )
     parser.add_argument("--log-dir", type=str, default=str(dir_runs), help="TensorBoard root log directory")
     parser.add_argument("--run-name", type=str, default=None, help="Optional TensorBoard run name")
     parser.add_argument("--preview-dir", type=str, default=str(dir_previews), help="Directory for saved prediction PNG previews")
     parser.add_argument("--preview-samples", type=int, default=4, help="Number of validation previews to save per epoch")
+    parser.add_argument(
+        "--loss-diagnostic-dir",
+        type=str,
+        default=str(dir_loss_diagnostics),
+        help="Directory for per-pixel loss diagnostic PNGs",
+    )
+    parser.add_argument(
+        "--loss-diagnostic-interval",
+        type=int,
+        default=50,
+        help="Save a per-pixel loss diagnostic every N epochs; use 0 to disable",
+    )
     parser.add_argument("--debug-dir", type=str, default=str(dir_debug), help="Directory for durable debug logs and heartbeat state")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = get_args()
+    paths_file = Path(args.paths_file)
+    input_h5_file = Path(args.h5_file).expanduser() if args.h5_file else configured_input_h5(paths_file)
     debug_log_file, state_file, debug_recorder = setup_logging(Path(args.debug_dir))
     install_signal_logging(debug_recorder)
     debug_recorder.update(
@@ -732,6 +982,8 @@ if __name__ == "__main__":
         command=" ".join(sys.argv),
         debug_log_file=str(debug_log_file),
         state_file=str(state_file),
+        paths_file=str(paths_file),
+        input_h5_file=str(input_h5_file),
     )
 
     try:
@@ -771,7 +1023,7 @@ if __name__ == "__main__":
             train_model(
                 model=model,
                 device=device,
-                h5_file=Path(args.h5_file),
+                h5_file=input_h5_file,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
@@ -782,6 +1034,8 @@ if __name__ == "__main__":
                 run_name=args.run_name,
                 preview_dir=Path(args.preview_dir),
                 preview_samples=args.preview_samples,
+                loss_diagnostic_dir=Path(args.loss_diagnostic_dir),
+                loss_diagnostic_interval=args.loss_diagnostic_interval,
                 debug_recorder=debug_recorder,
             )
         except torch.cuda.OutOfMemoryError as exc:
@@ -795,7 +1049,7 @@ if __name__ == "__main__":
             train_model(
                 model=model,
                 device=device,
-                h5_file=Path(args.h5_file),
+                h5_file=input_h5_file,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
@@ -806,6 +1060,8 @@ if __name__ == "__main__":
                 run_name=args.run_name,
                 preview_dir=Path(args.preview_dir),
                 preview_samples=args.preview_samples,
+                loss_diagnostic_dir=Path(args.loss_diagnostic_dir),
+                loss_diagnostic_interval=args.loss_diagnostic_interval,
                 debug_recorder=debug_recorder,
             )
     except Exception as exc:
