@@ -3,3 +3,8 @@ __pycache__/
 data/
 prediction_previews/
 runs/
+extract_spots/IN718_twins_frame_1148_overlap.ipynb
+extract_spots/extract_IN718_twins_frame_1148.py
+output/
+project_paths.toml
+serverdaten/
