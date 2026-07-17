@@ -1,0 +1,5 @@
+# Project-local paths used by train.py.
+
+[data]
+# HDF5 file containing image, spot_images, and spot_masks datasets.
+input_h5 = "./data/augmented_spot_patches_with_masks.h5"
