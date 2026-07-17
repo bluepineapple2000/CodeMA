@@ -527,8 +527,11 @@ def train_model(
     preview_samples: int = 5,
     checkpoint_dir: Path = dir_checkpoint,
     max_samples: int | None = None,
+    early_stopping_patience: int = 10,
     debug_recorder: TrainingDebugRecorder | None = None,
 ):
+    if early_stopping_patience < 0:
+        raise ValueError("early_stopping_patience must be non-negative")
     if debug_recorder is not None:
         debug_recorder.update(status="running", phase="loading_dataset", h5_file=str(h5_file))
     dataset = H5SpotSeparationDataset(h5_file, img_scale)
@@ -594,6 +597,8 @@ def train_model(
             "run_name": run_name,
             "preview_samples": preview_samples,
             "max_samples": max_samples or 0,
+            "early_stopping_patience": early_stopping_patience,
+            "base_features": model.base_features,
             "optimizer": "AdamW",
             "loss": "PI_full_image_l1",
         },
@@ -613,6 +618,8 @@ def train_model(
         Device:          %s
         Image scaling:   %s
         Mixed Precision: %s
+        Base features:   %d
+        Early stopping:  %s
     """,
         h5_file,
         epochs,
@@ -625,6 +632,8 @@ def train_model(
         device.type,
         img_scale,
         amp,
+        model.base_features,
+        f"patience {early_stopping_patience}" if early_stopping_patience else "disabled",
     )
 
     optimizer = optim.AdamW(
@@ -636,6 +645,10 @@ def train_model(
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=200)
     grad_scaler = torch.amp.GradScaler(device.type, enabled=amp)
     global_step = 0
+    best_val_score = float("inf")
+    best_epoch = 0
+    best_model_state = None
+    epochs_without_improvement = 0
 
     for epoch in range(1, epochs + 1):
         if debug_recorder is not None:
@@ -746,6 +759,18 @@ def train_model(
         logging.info("Epoch %d mean training loss: %s", epoch, mean_epoch_loss)
         logging.info("Epoch %d validation separation loss: %s", epoch, val_score)
 
+        if n_val > 0 and val_score < best_val_score:
+            best_val_score = val_score
+            best_epoch = epoch
+            epochs_without_improvement = 0
+            best_model_state = {
+                name: value.detach().cpu().clone() for name, value in model.state_dict().items()
+            }
+            logging.info("New best validation loss at epoch %d: %s", epoch, val_score)
+        elif n_val > 0:
+            epochs_without_improvement += 1
+            logging.info("Validation loss did not improve for %d epoch(s)", epochs_without_improvement)
+
         if debug_recorder is not None:
             debug_recorder.update(
                 phase="epoch_finished",
@@ -762,6 +787,17 @@ def train_model(
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(checkpoint_dir / f"checkpoint_epoch{epoch}.pth"))
             logging.info("Checkpoint %d saved!", epoch)
+
+        if early_stopping_patience and n_val > 0 and epochs_without_improvement >= early_stopping_patience:
+            logging.info(
+                "Early stopping at epoch %d; best validation loss was %s at epoch %d",
+                epoch, best_val_score, best_epoch,
+            )
+            break
+
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        logging.info("Restored best model weights from epoch %d", best_epoch)
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     final_model_file = checkpoint_dir / safe_model_file_name(run_name)
@@ -803,6 +839,11 @@ def get_args():
     )
     parser.add_argument("--amp", action="store_true", default=False, help="Use mixed precision")
     parser.add_argument("--bilinear", action="store_true", default=False, help="Use bilinear upsampling")
+    parser.add_argument("--base-features", type=int, default=32, help="Number of features in the first U-Net level")
+    parser.add_argument(
+        "--early-stopping-patience", type=int, default=10,
+        help="Stop after this many epochs without validation improvement (0 disables)",
+    )
     parser.add_argument("--paths-file", type=str, default=str(dir_paths_file), help="TOML file with training input/output paths")
     parser.add_argument("--path-profile", type=str, default=default_path_profile, help="Path profile to read from --paths-file")
     parser.add_argument("--h5-file", type=str, default=None, help="Override HDF5 input file from the selected path profile")
@@ -844,7 +885,7 @@ if __name__ == "__main__":
         debug_recorder.update(phase="device_selected", device=str(device), cuda_available=torch.cuda.is_available())
         logging.info("Using device %s", device)
 
-        model = UNet(n_channels=1, n_classes=2, bilinear=args.bilinear)
+        model = UNet(n_channels=1, n_classes=2, bilinear=args.bilinear, base_features=args.base_features)
         model = model.to(memory_format=torch.channels_last)
 
         logging.info(
@@ -880,6 +921,7 @@ if __name__ == "__main__":
                 preview_samples=args.preview_samples,
                 checkpoint_dir=training_paths["checkpoint_dir"],
                 max_samples=args.max_samples,
+                early_stopping_patience=args.early_stopping_patience,
                 debug_recorder=debug_recorder,
             )
         except torch.cuda.OutOfMemoryError as exc:
@@ -906,6 +948,7 @@ if __name__ == "__main__":
                 preview_samples=args.preview_samples,
                 checkpoint_dir=training_paths["checkpoint_dir"],
                 max_samples=args.max_samples,
+                early_stopping_patience=args.early_stopping_patience,
                 debug_recorder=debug_recorder,
             )
     except Exception as exc:
