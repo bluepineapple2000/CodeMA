@@ -4,4 +4,5 @@ data/
 prediction_previews/
 runs/
 serverdaten/
-output
+output/
+evaluation/
