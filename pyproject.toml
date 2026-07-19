@@ -14,6 +14,7 @@ dependencies = [
     "plotly>=6.8.0",
     "nbformat>=5.10.4",
     "docx>=0.2.4",
+    "pandas>=3.0.3",
 ]
 
 [tool.uv.sources]
