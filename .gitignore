@@ -6,3 +6,6 @@ runs/
 serverdaten/
 output/
 evaluation/
+Spot_pipeline/
+eva_server/
+.gitignore

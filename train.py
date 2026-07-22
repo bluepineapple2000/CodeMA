@@ -288,6 +288,59 @@ def l1_loss_per_sample(prediction: torch.Tensor, target: torch.Tensor) -> torch.
     return l1_loss_per_channel_pixel(prediction, target).mean(dim=(1, 2, 3))
 
 
+def weighted_l1_per_sample(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    foreground_weight: float = 8.0,
+    foreground_threshold: float = 1e-4,
+) -> torch.Tensor:
+    """L1 with extra weight on nonzero target pixels, normalized per sample."""
+    error = (prediction - target).abs()
+    foreground = (target > foreground_threshold).to(dtype=error.dtype)
+    weights = 1.0 + foreground_weight * foreground
+    numerator = (error * weights).sum(dim=(1, 2, 3))
+    denominator = weights.sum(dim=(1, 2, 3)).clamp_min(1.0)
+    return numerator / denominator
+
+
+def permutation_invariant_weighted_l1_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    foreground_weight: float = 8.0,
+) -> torch.Tensor:
+    direct = weighted_l1_per_sample(prediction, target, foreground_weight=foreground_weight)
+    swapped = weighted_l1_per_sample(prediction, target.flip(1), foreground_weight=foreground_weight)
+    return torch.minimum(direct, swapped).mean()
+
+
+def reconstruction_l1_loss(prediction: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+    return F.l1_loss(prediction.sum(dim=1, keepdim=True), image)
+
+
+def background_l1_loss(
+    prediction: torch.Tensor,
+    image: torch.Tensor,
+    background_threshold: float = 1e-4,
+) -> torch.Tensor:
+    background = image <= background_threshold
+    if not background.any():
+        return prediction.new_tensor(0.0)
+    return prediction.masked_select(background.expand_as(prediction)).abs().mean()
+
+
+def overlap_exclusivity_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    foreground_threshold: float = 1e-4,
+) -> torch.Tensor:
+    target_overlap = (target[:, 0:1] > foreground_threshold) & (target[:, 1:2] > foreground_threshold)
+    disallowed_overlap = ~target_overlap
+    if not disallowed_overlap.any():
+        return prediction.new_tensor(0.0)
+    overlap_intensity = prediction[:, 0:1] * prediction[:, 1:2]
+    return overlap_intensity.masked_select(disallowed_overlap).mean()
+
+
 def best_l1_assignment(
     prediction: torch.Tensor,
     target: torch.Tensor,
@@ -311,11 +364,24 @@ def separation_loss_components(
     prediction: torch.Tensor,
     target: torch.Tensor,
     image: torch.Tensor,
+    foreground_weight: float = 8.0,
 ) -> dict[str, torch.Tensor]:
-    del image  # Separation is supervised by the two target spot channels, not by reconstruction.
-    direct = l1_loss_per_sample(prediction, target)
-    swapped = l1_loss_per_sample(prediction, target.flip(1))
-    return {"total": torch.minimum(direct, swapped).mean()}
+    spot = permutation_invariant_weighted_l1_loss(
+        prediction,
+        target,
+        foreground_weight=foreground_weight,
+    )
+    reconstruction = reconstruction_l1_loss(prediction, image)
+    background = background_l1_loss(prediction, image)
+    overlap = overlap_exclusivity_loss(prediction, target)
+    total = spot + 0.3 * reconstruction + 0.1 * background + 0.3 * overlap
+    return {
+        "total": total,
+        "spot": spot,
+        "reconstruction": reconstruction,
+        "background": background,
+        "overlap": overlap,
+    }
 
 
 def separation_loss(
@@ -699,7 +765,12 @@ def train_model(
                 total_loss = loss_parts["total"].detach().cpu().item()
                 epoch_loss += total_loss
                 writer.add_scalar("Loss/train_batch", total_loss, global_step)
-                writer.add_scalar("Loss_parts/train_l1", total_loss, global_step)
+                for loss_name, loss_value in loss_parts.items():
+                    writer.add_scalar(
+                        f"Loss_parts/train_{loss_name}",
+                        loss_value.detach().cpu().item(),
+                        global_step,
+                    )
                 pbar.set_postfix(**{"loss (batch)": total_loss})
 
                 division_step = n_train // (5 * batch_size)
