@@ -284,45 +284,56 @@ def soft_dice_per_sample(
     return numerator / denominator
 
 
+def weighted_tversky_loss_per_sample(
+    prediction: torch.Tensor,
+    spot_target: torch.Tensor,
+    alpha: float = 0.7,
+    beta: float = 0.3,
+    background_weight: float = 0.02,
+    foreground_threshold: float = 1e-4,
+    smooth: float = 1.0,
+) -> torch.Tensor:
+    """PIN-style weighted Tversky mask loss adapted to one predicted spot."""
+    pred_mask = prediction.clamp(0.0, 1.0)
+    target_mask = (spot_target > foreground_threshold).to(dtype=prediction.dtype)
+    background = target_mask <= 0.5
+
+    false_positive_weights = torch.ones_like(pred_mask)
+    false_positive_weights = torch.where(
+        background,
+        torch.full_like(false_positive_weights, background_weight),
+        false_positive_weights,
+    )
+    true_positive = (pred_mask * target_mask).sum(dim=(1, 2, 3))
+    false_positive = (pred_mask * (1.0 - target_mask) * false_positive_weights).sum(dim=(1, 2, 3))
+    false_negative = ((1.0 - pred_mask) * target_mask).sum(dim=(1, 2, 3))
+    score = (true_positive + smooth) / (
+        true_positive + alpha * false_positive + beta * false_negative + smooth
+    )
+    return 1.0 - score
+
+
 def single_spot_loss_per_sample(
     prediction: torch.Tensor,
     spot_target: torch.Tensor,
-    foreground_weight: float = 8.0,
-    foreground_threshold: float = 1e-4,
 ) -> dict[str, torch.Tensor]:
     """Loss vectors for one prediction against one candidate ground-truth spot."""
-    dice = 1.0 - soft_dice_per_sample(prediction, spot_target).mean(dim=1)
-
-    error = (prediction - spot_target).abs()
-    foreground = (spot_target > foreground_threshold).to(dtype=error.dtype)
-    weights = 1.0 + foreground_weight * foreground
-    intensity = (error * weights).sum(dim=(1, 2, 3)) / weights.sum(dim=(1, 2, 3)).clamp_min(1.0)
-
-    # Unlike input-background loss, this also penalizes assigning the other spot to this output.
-    target_background = (spot_target <= foreground_threshold).to(dtype=prediction.dtype)
-    background = (prediction.abs() * target_background).sum(dim=(1, 2, 3)) / target_background.sum(
-        dim=(1, 2, 3)
-    ).clamp_min(1.0)
-    total = dice + 0.25 * intensity + 0.01 * background
+    mask_tversky = weighted_tversky_loss_per_sample(prediction, spot_target)
+    intensity_l1 = (prediction - spot_target).abs().mean(dim=(1, 2, 3))
+    total = mask_tversky + intensity_l1
     return {
         "total": total,
-        "dice": dice,
-        "intensity": intensity,
-        "background": background,
+        "mask_tversky": mask_tversky,
+        "intensity_l1": intensity_l1,
     }
 
 
 def selected_target_is_second(
     first_spot_prediction: torch.Tensor,
     target: torch.Tensor,
-    foreground_weight: float = 8.0,
 ) -> torch.Tensor:
-    first = single_spot_loss_per_sample(
-        first_spot_prediction, target[:, 0:1], foreground_weight=foreground_weight
-    )
-    second = single_spot_loss_per_sample(
-        first_spot_prediction, target[:, 1:2], foreground_weight=foreground_weight
-    )
+    first = single_spot_loss_per_sample(first_spot_prediction, target[:, 0:1])
+    second = single_spot_loss_per_sample(first_spot_prediction, target[:, 1:2])
     return second["total"] < first["total"]
 
 
@@ -338,15 +349,10 @@ def separation_loss_components(
     first_spot_prediction: torch.Tensor,
     target: torch.Tensor,
     image: torch.Tensor,
-    foreground_weight: float = 8.0,
 ) -> dict[str, torch.Tensor]:
     del image  # The loss supervises one selected spot only; the other output is a residual.
-    first = single_spot_loss_per_sample(
-        first_spot_prediction, target[:, 0:1], foreground_weight=foreground_weight
-    )
-    second = single_spot_loss_per_sample(
-        first_spot_prediction, target[:, 1:2], foreground_weight=foreground_weight
-    )
+    first = single_spot_loss_per_sample(first_spot_prediction, target[:, 0:1])
+    second = single_spot_loss_per_sample(first_spot_prediction, target[:, 1:2])
     use_second = second["total"] < first["total"]
 
     selected = {
@@ -366,6 +372,7 @@ def separation_metric_tensors(
     prediction = compose_spot_predictions(first_spot_prediction, image)
     loss_parts = separation_loss_components(first_spot_prediction, target, image)
     first_spot_target = aligned_target[:, 0:1]
+    first_spot_mask_target = (first_spot_target > threshold).to(dtype=first_spot_prediction.dtype)
     first_spot_error = (first_spot_prediction - first_spot_target).abs()
     first_spot_squared_error = (first_spot_prediction - first_spot_target).square()
     two_spot_absolute_error = (prediction - aligned_target).abs()
@@ -391,10 +398,10 @@ def separation_metric_tensors(
 
     return {
         "loss_total": loss_parts["total"],
-        "loss_dice": loss_parts["dice"],
-        "loss_intensity": loss_parts["intensity"],
-        "loss_background": loss_parts["background"],
-        "soft_dice": soft_dice_per_sample(first_spot_prediction, first_spot_target).mean(),
+        "loss_mask_tversky": loss_parts["mask_tversky"],
+        "loss_intensity_l1": loss_parts["intensity_l1"],
+        "soft_dice": soft_dice_per_sample(first_spot_prediction, first_spot_mask_target).mean(),
+        "mask_soft_dice": soft_dice_per_sample(first_spot_prediction, first_spot_mask_target).mean(),
         "soft_dice_spot_1": per_spot_soft_dice[:, 0].mean(),
         "soft_dice_spot_2": per_spot_soft_dice[:, 1].mean(),
         "two_spot_soft_dice": per_spot_soft_dice.mean(),
@@ -570,6 +577,7 @@ def train_model(
     checkpoint_dir: Path = dir_checkpoint,
     max_samples: int | None = None,
     debug_recorder: TrainingDebugRecorder | None = None,
+    early_stopping_patience: int = 20,
 ):
     if debug_recorder is not None:
         debug_recorder.update(status="running", phase="loading_dataset", h5_file=str(h5_file))
@@ -636,8 +644,9 @@ def train_model(
             "run_name": run_name,
             "preview_samples": preview_samples,
             "max_samples": max_samples or 0,
+            "early_stopping_patience": early_stopping_patience,
             "optimizer": "AdamW",
-            "loss": "PI_one_spot_dice+0.25_foreground_l1+0.01_target_background",
+            "loss": "PI_one_spot_weighted_Tversky+L1_intensity",
         },
         {"hparam/metric": 0},
     )
@@ -678,6 +687,11 @@ def train_model(
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=200)
     grad_scaler = torch.amp.GradScaler(device.type, enabled=amp)
     global_step = 0
+    best_val_score = float("inf")
+    best_epoch = 0
+    best_model_state = None
+    epochs_without_improvement = 0
+    early_stop = False
 
     for epoch in range(1, epochs + 1):
         if debug_recorder is not None:
@@ -730,9 +744,8 @@ def train_model(
                 train_epoch_metrics.append(batch_metrics)
                 log_metrics(writer, "train_batch", batch_metrics, global_step)
                 writer.add_scalar("Loss/train_batch", batch_metrics["loss_total"], global_step)
-                writer.add_scalar("Loss_parts/train_dice", batch_metrics["loss_dice"], global_step)
-                writer.add_scalar("Loss_parts/train_intensity", batch_metrics["loss_intensity"], global_step)
-                writer.add_scalar("Loss_parts/train_background", batch_metrics["loss_background"], global_step)
+                writer.add_scalar("Loss_parts/train_mask_tversky", batch_metrics["loss_mask_tversky"], global_step)
+                writer.add_scalar("Loss_parts/train_intensity_l1", batch_metrics["loss_intensity_l1"], global_step)
                 pbar.set_postfix(**{"loss (batch)": batch_metrics["loss_total"]})
 
                 division_step = n_train // (5 * batch_size)
@@ -799,6 +812,30 @@ def train_model(
         logging.info("Epoch %d mean training loss: %s", epoch, mean_epoch_loss)
         logging.info("Epoch %d validation separation loss: %s", epoch, val_score)
 
+        if val_score < best_val_score:
+            best_val_score = val_score
+            best_epoch = epoch
+            best_model_state = {
+                name: value.detach().cpu().clone()
+                for name, value in model.state_dict().items()
+            }
+            epochs_without_improvement = 0
+            logging.info("New best validation loss at epoch %d: %s", epoch, best_val_score)
+        else:
+            epochs_without_improvement += 1
+            logging.info(
+                "Validation loss did not improve for %d epoch(s) (patience=%d).",
+                epochs_without_improvement,
+                early_stopping_patience,
+            )
+            if early_stopping_patience > 0 and epochs_without_improvement >= early_stopping_patience:
+                early_stop = True
+                logging.info(
+                    "Early stopping at epoch %d; best validation loss was %s.",
+                    epoch,
+                    best_val_score,
+                )
+
         if debug_recorder is not None:
             debug_recorder.update(
                 phase="epoch_finished",
@@ -807,6 +844,10 @@ def train_model(
                 global_step=global_step,
                 train_loss=mean_epoch_loss,
                 validation_loss=val_score,
+                best_validation_loss=best_val_score,
+                best_epoch=best_epoch,
+                epochs_without_improvement=epochs_without_improvement,
+                early_stop=early_stop,
             )
 
         if save_checkpoint:
@@ -816,6 +857,13 @@ def train_model(
             torch.save(model.state_dict(), str(checkpoint_dir / f"checkpoint_epoch{epoch}.pth"))
             logging.info("Checkpoint %d saved!", epoch)
 
+        if early_stop:
+            break
+
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        logging.info("Restored best model state from epoch %d before final save.", best_epoch)
+
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     final_model_file = checkpoint_dir / safe_model_file_name(run_name)
     if debug_recorder is not None:
@@ -824,6 +872,9 @@ def train_model(
             epochs=epochs,
             global_step=global_step,
             final_model_file=str(final_model_file),
+            best_validation_loss=best_val_score,
+            best_epoch=best_epoch,
+            epochs_without_improvement=epochs_without_improvement,
         )
     torch.save(model.state_dict(), str(final_model_file))
     logging.info("Final model saved to %s", final_model_file)
