@@ -3,6 +3,9 @@ __pycache__/
 data/
 prediction_previews/
 runs/
-output/
 serverdaten/
+output/
 evaluation/
+.gitignore
+Spot_Pipeline
+ 

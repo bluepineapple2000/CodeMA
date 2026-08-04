@@ -1,0 +1,2 @@
+rank,model_display,architecture,spot_recognition_mean,dice_mean,iou_mean,rmse_mean,nrmse_mean,soft_intensity_dice_mean,integrated_intensity_abs_relative_error_mean,seconds_per_sample,n_samples,model,source_dir
+1,0702-1451_oneoutput,oneoutput,0.6426297241806984,0.6819373455643654,0.5469751874655485,0.11809397433064873,0.4754809047147632,0.8604076686561107,0.1948407002943102,0.0097091368391877,5000,final_20260702-145153_augmented_spots_train_e200_b10_lr0.0001_s1,eva_server/evaluation/oneoutput/0702_oneoutput
