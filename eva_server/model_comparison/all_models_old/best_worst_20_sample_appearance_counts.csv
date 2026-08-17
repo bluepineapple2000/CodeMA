@@ -1,0 +1,404 @@
+sample_number,best_20_appearances,worst_20_appearances,total_appearances,best_20_models,worst_20_models,sample_name
+047444,11,0,11,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, one-output Loss, two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss, two-output Tversky Loss, two-output Tversky Loss small Dataset",,sample_047444
+045574,10,0,10,"multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 3e-04, two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss, two-output Tversky Loss small Dataset",,sample_045574
+079887,0,10,10,,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05, two-output Tversky Loss",sample_079887
+048727,9,0,9,"multi-output BCE/MSE Loss, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, two-output L1, two-output L1 base-channel 32, two-output Reconstruction Loss",,sample_048727
+079138,9,0,9,"multi-output BCE/MSE Loss, multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 3e-04, two-output Tversky Loss",,sample_079138
+043225,0,9,9,,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05",sample_043225
+049582,8,0,8,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05",,sample_049582
+051926,8,0,8,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",,sample_051926
+051959,8,0,8,"multi-output Tversky Loss, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05, one-output Loss",,sample_051959
+008710,7,1,8,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05, two-output Tversky Loss",multi-output Tversky Loss base-channel 32,sample_008710
+019559,0,8,8,,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 5e-05",sample_019559
+072650,0,8,8,,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05, two-output Tversky Loss",sample_072650
+073381,0,8,8,,"multi-output BCE/MSE Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05, two-output Tversky Loss",sample_073381
+078401,0,8,8,,"multi-output BCE/MSE Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, one-output Loss, two-output Tversky Loss",sample_078401
+045737,7,0,7,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04",,sample_045737
+047224,7,0,7,"multi-output BCE/MSE Loss small Dataset, two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss, two-output Tversky Loss, two-output Tversky Loss small Dataset",,sample_047224
+049380,7,0,7,"one-output Loss, two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss, two-output Tversky Loss, two-output Tversky Loss small Dataset",,sample_049380
+000445,0,7,7,,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss batch 100, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05",sample_000445
+001810,0,7,7,,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 5e-05, two-output Tversky Loss",sample_001810
+044642,6,0,6,"one-output Loss, two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Tversky Loss, two-output Tversky Loss small Dataset",,sample_044642
+045148,6,0,6,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05",,sample_045148
+051591,6,0,6,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 3e-04",,sample_051591
+077653,6,0,6,"multi-output BCE/MSE Loss, multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss lr 1e-04, one-output Tversky Loss, two-output Tversky Loss",,sample_077653
+003958,0,6,6,,"multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 5e-05",sample_003958
+057275,0,6,6,,"multi-output Tversky Loss, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 20, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05",sample_057275
+044855,5,0,5,"multi-output BCE/MSE Loss, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model",,sample_044855
+045104,5,0,5,"multi-output Tversky Loss, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 3e-04",,sample_045104
+045372,5,0,5,"multi-output BCE/MSE Loss, two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",,sample_045372
+046700,5,0,5,"multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 3e-04, two-output Tversky Loss small Dataset",,sample_046700
+047139,5,0,5,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 5e-05",,sample_047139
+047328,5,0,5,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss, two-output Tversky Loss small Dataset",,sample_047328
+047510,5,0,5,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss, two-output Tversky Loss",,sample_047510
+047544,5,0,5,"multi-output Tversky Loss, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05",,sample_047544
+048186,5,0,5,"multi-output BCE/MSE Loss, one-output Loss, two-output L1, two-output L1 batch 100, two-output Reconstruction Loss",,sample_048186
+048883,5,0,5,"one-output Loss, two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",,sample_048883
+048932,5,0,5,"one-output Loss, two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Tversky Loss",,sample_048932
+049458,5,0,5,"multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, one-output Loss, two-output Tversky Loss",,sample_049458
+049720,5,0,5,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05",,sample_049720
+049932,5,0,5,"multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05, one-output Loss",,sample_049932
+050443,5,0,5,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss, two-output Tversky Loss",,sample_050443
+003554,0,5,5,,"multi-output BCE/MSE Loss, multi-output Tversky Loss base-channel 32, one-output Loss, two-output L1 base-channel 32, two-output L1 batch 100",sample_003554
+057772,0,5,5,,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05, two-output Tversky Loss",sample_057772
+071488,0,5,5,,"multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss lr 3e-04, two-output Reconstruction Loss",sample_071488
+076790,0,5,5,,"multi-output BCE/MSE Loss small Dataset, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, two-output Tversky Loss",sample_076790
+078217,0,5,5,,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 5e-05",sample_078217
+019796,4,0,4,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",,sample_019796
+023249,4,0,4,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",,sample_023249
+047081,4,0,4,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",,sample_047081
+047142,4,0,4,"multi-output Tversky Loss, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04, one-output Loss",,sample_047142
+048176,4,0,4,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",,sample_048176
+048568,4,0,4,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss batch 20, two-output Tversky Loss, two-output Tversky Loss small Dataset",,sample_048568
+049592,4,0,4,"multi-output Tversky Loss base-channel 32, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05",,sample_049592
+049893,4,0,4,"multi-output BCE/MSE Loss small Dataset, two-output L1, two-output L1 batch 100, two-output Reconstruction Loss",,sample_049893
+051647,4,0,4,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",,sample_051647
+059722,0,4,4,,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss batch 20, multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04",sample_059722
+066187,0,4,4,,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",sample_066187
+071287,0,4,4,,"multi-output Tversky Loss batch 20, multi-output Tversky Loss lr 1e-04, two-output L1, two-output L1 batch 100",sample_071287
+077736,0,4,4,,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",sample_077736
+026386,3,0,3,"two-output L1 base-channel 32, two-output L1 batch 100, two-output Reconstruction Loss",,sample_026386
+045237,3,0,3,"multi-output Tversky Loss, multi-output Tversky Loss batch 20, multi-output Tversky Loss lr 5e-05",,sample_045237
+046587,3,0,3,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 20",,sample_046587
+048052,3,0,3,"multi-output Tversky Loss, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05",,sample_048052
+048435,3,0,3,"multi-output Tversky Loss batch 20, multi-output Tversky Loss lr 1e-04, two-output Tversky Loss small Dataset",,sample_048435
+049982,3,0,3,"multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss final Model",,sample_049982
+050890,3,0,3,"multi-output Tversky Loss, multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32",,sample_050890
+050981,3,0,3,"multi-output Tversky Loss, multi-output Tversky Loss batch 100, multi-output Tversky Loss lr 3e-04",,sample_050981
+051534,3,0,3,"multi-output BCE/MSE Loss, multi-output Tversky Loss ReduceLROnPlateau, two-output Tversky Loss small Dataset",,sample_051534
+052041,3,0,3,"multi-output Tversky Loss base-channel 32, multi-output Tversky Loss lr 3e-04, multi-output Tversky Loss lr 5e-05",,sample_052041
+049435,2,1,3,"multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20",multi-output Tversky Loss,sample_049435
+049536,2,1,3,"multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 5e-05",two-output Tversky Loss,sample_049536
+050878,2,1,3,"two-output Tversky Loss, two-output Tversky Loss small Dataset",multi-output Tversky Loss batch 20,sample_050878
+052044,2,1,3,"multi-output BCE/MSE Loss small Dataset, one-output Loss",multi-output Tversky Loss,sample_052044
+003894,0,3,3,,"multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 100, multi-output Tversky Loss final Model",sample_003894
+005000,0,3,3,,"multi-output BCE/MSE Loss small Dataset, multi-output Tversky Loss batch 100, two-output Tversky Loss",sample_005000
+026164,0,3,3,,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss base-channel 32, multi-output Tversky Loss batch 20",sample_026164
+030707,0,3,3,,"multi-output BCE/MSE Loss, multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 5e-05",sample_030707
+066140,0,3,3,,"multi-output Tversky Loss, multi-output Tversky Loss batch 100, multi-output Tversky Loss batch 20",sample_066140
+071219,0,3,3,,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100",sample_071219
+071564,0,3,3,,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100",sample_071564
+072178,0,3,3,,"two-output L1, two-output L1 base-channel 32, two-output Reconstruction Loss",sample_072178
+072827,0,3,3,,"two-output L1, two-output L1 batch 100, two-output Reconstruction Loss",sample_072827
+073190,0,3,3,,"multi-output Tversky Loss ReduceLROnPlateau, one-output Loss, two-output Tversky Loss",sample_073190
+073675,0,3,3,,"two-output L1, two-output L1 base-channel 32, two-output L1 batch 100",sample_073675
+074369,0,3,3,,"multi-output Tversky Loss lr 1e-04, one-output Loss, two-output Tversky Loss small Dataset",sample_074369
+075058,0,3,3,,"multi-output Tversky Loss batch 100, multi-output Tversky Loss lr 3e-04, two-output Reconstruction Loss",sample_075058
+078603,0,3,3,,"two-output L1, two-output L1 batch 100, two-output Reconstruction Loss",sample_078603
+079572,0,3,3,,"multi-output BCE/MSE Loss small Dataset, multi-output Tversky Loss lr 1e-04, two-output Tversky Loss small Dataset",sample_079572
+079953,0,3,3,,"two-output L1, two-output L1 batch 100, two-output Reconstruction Loss",sample_079953
+018877,2,0,2,"multi-output BCE/MSE Loss, multi-output BCE/MSE Loss small Dataset",,sample_018877
+023573,2,0,2,"multi-output BCE/MSE Loss, multi-output Tversky Loss batch 20",,sample_023573
+024693,2,0,2,"multi-output Tversky Loss final Model, multi-output Tversky Loss lr 3e-04",,sample_024693
+025097,2,0,2,"two-output L1 base-channel 32, two-output Reconstruction Loss",,sample_025097
+044998,2,0,2,"one-output Loss, one-output Tversky Loss",,sample_044998
+046024,2,0,2,"multi-output BCE/MSE Loss, multi-output Tversky Loss final Model",,sample_046024
+046032,2,0,2,"two-output Tversky Loss, two-output Tversky Loss small Dataset",,sample_046032
+046070,2,0,2,"multi-output Tversky Loss, multi-output Tversky Loss lr 1e-04",,sample_046070
+047463,2,0,2,"multi-output BCE/MSE Loss small Dataset, one-output Loss",,sample_047463
+047723,2,0,2,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss batch 20",,sample_047723
+047896,2,0,2,"one-output Loss, one-output Tversky Loss",,sample_047896
+048236,2,0,2,"multi-output Tversky Loss base-channel 32, multi-output Tversky Loss lr 1e-04",,sample_048236
+048915,2,0,2,"multi-output BCE/MSE Loss small Dataset, one-output Loss",,sample_048915
+048960,2,0,2,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss batch 100",,sample_048960
+049319,2,0,2,"multi-output Tversky Loss batch 100, two-output Tversky Loss small Dataset",,sample_049319
+050469,2,0,2,"one-output Loss, one-output Tversky Loss",,sample_050469
+051001,2,0,2,"multi-output Tversky Loss batch 100, two-output Tversky Loss small Dataset",,sample_051001
+051362,2,0,2,"multi-output Tversky Loss, multi-output Tversky Loss lr 1e-04",,sample_051362
+051629,2,0,2,"two-output Tversky Loss, two-output Tversky Loss small Dataset",,sample_051629
+052976,2,0,2,"multi-output Tversky Loss lr 1e-04, multi-output Tversky Loss lr 5e-05",,sample_052976
+052981,2,0,2,"multi-output Tversky Loss batch 100, multi-output Tversky Loss lr 5e-05",,sample_052981
+053104,2,0,2,"multi-output Tversky Loss batch 20, multi-output Tversky Loss lr 5e-05",,sample_053104
+018971,1,1,2,multi-output BCE/MSE Loss,multi-output Tversky Loss,sample_018971
+041726,1,1,2,one-output Tversky Loss,multi-output BCE/MSE Loss,sample_041726
+045957,1,1,2,multi-output Tversky Loss batch 100,multi-output Tversky Loss final Model,sample_045957
+048738,1,1,2,multi-output Tversky Loss batch 100,two-output Tversky Loss,sample_048738
+049849,1,1,2,two-output Tversky Loss small Dataset,two-output Tversky Loss,sample_049849
+000562,0,2,2,,"multi-output Tversky Loss base-channel 32, two-output Reconstruction Loss",sample_000562
+002862,0,2,2,,"multi-output BCE/MSE Loss small Dataset, two-output Tversky Loss small Dataset",sample_002862
+003731,0,2,2,,"one-output Loss, two-output Tversky Loss small Dataset",sample_003731
+051940,0,2,2,,"multi-output Tversky Loss, two-output Tversky Loss",sample_051940
+058762,0,2,2,,"multi-output Tversky Loss final Model, multi-output Tversky Loss lr 1e-04",sample_058762
+061725,0,2,2,,"multi-output Tversky Loss batch 20, multi-output Tversky Loss lr 1e-04",sample_061725
+064450,0,2,2,,"one-output Loss, two-output L1 batch 100",sample_064450
+066538,0,2,2,,"multi-output BCE/MSE Loss, two-output L1",sample_066538
+071288,0,2,2,,"multi-output BCE/MSE Loss, two-output L1 batch 100",sample_071288
+071457,0,2,2,,"two-output L1, two-output L1 base-channel 32",sample_071457
+072422,0,2,2,,"two-output L1 batch 100, two-output Reconstruction Loss",sample_072422
+073101,0,2,2,,"multi-output Tversky Loss batch 100, multi-output Tversky Loss lr 3e-04",sample_073101
+073496,0,2,2,,"two-output L1, two-output L1 batch 100",sample_073496
+073567,0,2,2,,"multi-output Tversky Loss final Model, one-output Loss",sample_073567
+073778,0,2,2,,"multi-output BCE/MSE Loss, multi-output Tversky Loss lr 3e-04",sample_073778
+073857,0,2,2,,"multi-output Tversky Loss batch 100, multi-output Tversky Loss lr 5e-05",sample_073857
+074368,0,2,2,,"one-output Loss, two-output Tversky Loss small Dataset",sample_074368
+075707,0,2,2,,"multi-output Tversky Loss batch 100, one-output Loss",sample_075707
+076786,0,2,2,,"two-output L1, two-output L1 batch 100",sample_076786
+076849,0,2,2,,"two-output L1 base-channel 32, two-output Reconstruction Loss",sample_076849
+077392,0,2,2,,"multi-output Tversky Loss batch 20, multi-output Tversky Loss lr 3e-04",sample_077392
+077612,0,2,2,,"multi-output Tversky Loss base-channel 32, multi-output Tversky Loss final Model",sample_077612
+079816,0,2,2,,"multi-output Tversky Loss ReduceLROnPlateau, multi-output Tversky Loss final Model",sample_079816
+000043,1,0,1,multi-output Tversky Loss base-channel 32,,sample_000043
+000254,1,0,1,one-output Tversky Loss,,sample_000254
+002007,1,0,1,multi-output Tversky Loss Evaluation,,sample_002007
+003410,1,0,1,one-output Tversky Loss,,sample_003410
+005156,1,0,1,one-output Tversky Loss,,sample_005156
+005832,1,0,1,multi-output Tversky Loss Evaluation,,sample_005832
+005939,1,0,1,multi-output Tversky Loss Evaluation,,sample_005939
+006243,1,0,1,multi-output Tversky Loss Evaluation,,sample_006243
+007139,1,0,1,multi-output BCE/MSE Loss,,sample_007139
+008423,1,0,1,one-output Tversky Loss,,sample_008423
+011121,1,0,1,multi-output Tversky Loss Evaluation,,sample_011121
+011218,1,0,1,multi-output Tversky Loss Evaluation,,sample_011218
+011576,1,0,1,multi-output Tversky Loss Evaluation,,sample_011576
+011611,1,0,1,multi-output Tversky Loss Evaluation,,sample_011611
+011633,1,0,1,multi-output Tversky Loss Evaluation,,sample_011633
+011675,1,0,1,multi-output Tversky Loss Evaluation,,sample_011675
+011938,1,0,1,multi-output Tversky Loss Evaluation,,sample_011938
+012006,1,0,1,multi-output Tversky Loss Evaluation,,sample_012006
+012072,1,0,1,multi-output Tversky Loss Evaluation,,sample_012072
+012279,1,0,1,multi-output Tversky Loss Evaluation,,sample_012279
+012328,1,0,1,multi-output Tversky Loss Evaluation,,sample_012328
+012382,1,0,1,multi-output Tversky Loss Evaluation,,sample_012382
+012872,1,0,1,multi-output Tversky Loss Evaluation,,sample_012872
+013047,1,0,1,multi-output Tversky Loss Evaluation,,sample_013047
+013093,1,0,1,multi-output Tversky Loss Evaluation,,sample_013093
+013271,1,0,1,multi-output Tversky Loss Evaluation,,sample_013271
+018518,1,0,1,one-output Tversky Loss,,sample_018518
+019073,1,0,1,one-output Tversky Loss,,sample_019073
+019399,1,0,1,multi-output BCE/MSE Loss,,sample_019399
+019748,1,0,1,one-output Tversky Loss,,sample_019748
+020897,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_020897
+020979,1,0,1,one-output Tversky Loss,,sample_020979
+022079,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_022079
+023009,1,0,1,multi-output BCE/MSE Loss,,sample_023009
+023748,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_023748
+024590,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_024590
+024647,1,0,1,one-output Tversky Loss,,sample_024647
+024827,1,0,1,multi-output Tversky Loss ReduceLROnPlateau,,sample_024827
+024836,1,0,1,multi-output Tversky Loss lr 1e-04,,sample_024836
+025237,1,0,1,multi-output BCE/MSE Loss,,sample_025237
+025990,1,0,1,multi-output BCE/MSE Loss,,sample_025990
+026149,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_026149
+028864,1,0,1,one-output Tversky Loss,,sample_028864
+032968,1,0,1,one-output Tversky Loss,,sample_032968
+035000,1,0,1,one-output Tversky Loss,,sample_035000
+044714,1,0,1,multi-output Tversky Loss,,sample_044714
+044797,1,0,1,multi-output Tversky Loss lr 5e-05,,sample_044797
+044911,1,0,1,two-output Tversky Loss small Dataset,,sample_044911
+044939,1,0,1,two-output Tversky Loss small Dataset,,sample_044939
+045138,1,0,1,two-output Tversky Loss,,sample_045138
+045433,1,0,1,multi-output Tversky Loss batch 100,,sample_045433
+045654,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_045654
+045658,1,0,1,multi-output Tversky Loss lr 5e-05,,sample_045658
+045691,1,0,1,two-output Tversky Loss,,sample_045691
+045996,1,0,1,multi-output BCE/MSE Loss,,sample_045996
+046042,1,0,1,multi-output BCE/MSE Loss,,sample_046042
+046212,1,0,1,multi-output Tversky Loss batch 20,,sample_046212
+046382,1,0,1,two-output Tversky Loss small Dataset,,sample_046382
+046394,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_046394
+046426,1,0,1,multi-output Tversky Loss,,sample_046426
+046568,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_046568
+046898,1,0,1,multi-output Tversky Loss final Model,,sample_046898
+046913,1,0,1,one-output Loss,,sample_046913
+047078,1,0,1,two-output Tversky Loss,,sample_047078
+047536,1,0,1,multi-output Tversky Loss lr 5e-05,,sample_047536
+048466,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_048466
+048537,1,0,1,multi-output Tversky Loss lr 5e-05,,sample_048537
+049197,1,0,1,multi-output BCE/MSE Loss,,sample_049197
+049705,1,0,1,one-output Loss,,sample_049705
+050327,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_050327
+050665,1,0,1,multi-output Tversky Loss lr 1e-04,,sample_050665
+050698,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_050698
+050955,1,0,1,two-output Tversky Loss,,sample_050955
+051019,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_051019
+051181,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_051181
+051295,1,0,1,multi-output BCE/MSE Loss small Dataset,,sample_051295
+051521,1,0,1,two-output Tversky Loss small Dataset,,sample_051521
+051730,1,0,1,multi-output Tversky Loss lr 1e-04,,sample_051730
+052431,1,0,1,one-output Loss,,sample_052431
+052658,1,0,1,one-output Loss,,sample_052658
+052895,1,0,1,multi-output Tversky Loss ReduceLROnPlateau,,sample_052895
+053123,1,0,1,multi-output Tversky Loss ReduceLROnPlateau,,sample_053123
+053164,1,0,1,two-output Tversky Loss,,sample_053164
+053205,1,0,1,multi-output BCE/MSE Loss,,sample_053205
+064668,1,0,1,one-output Tversky Loss,,sample_064668
+066361,1,0,1,one-output Tversky Loss,,sample_066361
+069619,1,0,1,one-output Tversky Loss,,sample_069619
+000239,0,1,1,,multi-output Tversky Loss batch 20,sample_000239
+000301,0,1,1,,multi-output Tversky Loss Evaluation,sample_000301
+000357,0,1,1,,multi-output Tversky Loss batch 20,sample_000357
+000538,0,1,1,,multi-output Tversky Loss Evaluation,sample_000538
+000573,0,1,1,,two-output L1 base-channel 32,sample_000573
+000584,0,1,1,,two-output L1 base-channel 32,sample_000584
+000639,0,1,1,,multi-output Tversky Loss,sample_000639
+001042,0,1,1,,multi-output Tversky Loss Evaluation,sample_001042
+001231,0,1,1,,multi-output BCE/MSE Loss,sample_001231
+001540,0,1,1,,two-output L1 batch 100,sample_001540
+001673,0,1,1,,multi-output Tversky Loss Evaluation,sample_001673
+001690,0,1,1,,one-output Loss,sample_001690
+001897,0,1,1,,multi-output Tversky Loss ReduceLROnPlateau,sample_001897
+002339,0,1,1,,two-output Reconstruction Loss,sample_002339
+003453,0,1,1,,multi-output BCE/MSE Loss,sample_003453
+003501,0,1,1,,multi-output Tversky Loss ReduceLROnPlateau,sample_003501
+003522,0,1,1,,two-output L1,sample_003522
+004454,0,1,1,,two-output Tversky Loss small Dataset,sample_004454
+004582,0,1,1,,multi-output Tversky Loss lr 3e-04,sample_004582
+007325,0,1,1,,one-output Loss,sample_007325
+007445,0,1,1,,multi-output Tversky Loss ReduceLROnPlateau,sample_007445
+007677,0,1,1,,two-output L1 batch 100,sample_007677
+007934,0,1,1,,one-output Loss,sample_007934
+008055,0,1,1,,two-output L1 base-channel 32,sample_008055
+008225,0,1,1,,multi-output Tversky Loss base-channel 32,sample_008225
+008276,0,1,1,,two-output Tversky Loss,sample_008276
+009041,0,1,1,,one-output Tversky Loss,sample_009041
+009184,0,1,1,,one-output Tversky Loss,sample_009184
+011184,0,1,1,,two-output Tversky Loss small Dataset,sample_011184
+011711,0,1,1,,one-output Tversky Loss,sample_011711
+013377,0,1,1,,multi-output Tversky Loss Evaluation,sample_013377
+013620,0,1,1,,multi-output Tversky Loss lr 3e-04,sample_013620
+014121,0,1,1,,multi-output Tversky Loss Evaluation,sample_014121
+014417,0,1,1,,one-output Loss,sample_014417
+014422,0,1,1,,multi-output Tversky Loss Evaluation,sample_014422
+014828,0,1,1,,multi-output Tversky Loss Evaluation,sample_014828
+015392,0,1,1,,multi-output Tversky Loss Evaluation,sample_015392
+017229,0,1,1,,multi-output Tversky Loss Evaluation,sample_017229
+017438,0,1,1,,one-output Tversky Loss,sample_017438
+018168,0,1,1,,multi-output Tversky Loss Evaluation,sample_018168
+018254,0,1,1,,multi-output Tversky Loss Evaluation,sample_018254
+018311,0,1,1,,multi-output Tversky Loss Evaluation,sample_018311
+018315,0,1,1,,multi-output Tversky Loss Evaluation,sample_018315
+018378,0,1,1,,multi-output Tversky Loss Evaluation,sample_018378
+018840,0,1,1,,multi-output Tversky Loss Evaluation,sample_018840
+019404,0,1,1,,multi-output Tversky Loss Evaluation,sample_019404
+019533,0,1,1,,multi-output Tversky Loss Evaluation,sample_019533
+019576,0,1,1,,multi-output Tversky Loss Evaluation,sample_019576
+019819,0,1,1,,multi-output Tversky Loss lr 1e-04,sample_019819
+019853,0,1,1,,multi-output Tversky Loss Evaluation,sample_019853
+021752,0,1,1,,one-output Tversky Loss,sample_021752
+022329,0,1,1,,one-output Tversky Loss,sample_022329
+023199,0,1,1,,multi-output Tversky Loss ReduceLROnPlateau,sample_023199
+023920,0,1,1,,multi-output BCE/MSE Loss,sample_023920
+024794,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_024794
+025792,0,1,1,,multi-output Tversky Loss lr 5e-05,sample_025792
+026738,0,1,1,,two-output Reconstruction Loss,sample_026738
+026825,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_026825
+028227,0,1,1,,one-output Tversky Loss,sample_028227
+033404,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_033404
+033796,0,1,1,,multi-output Tversky Loss,sample_033796
+034449,0,1,1,,one-output Tversky Loss,sample_034449
+036185,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_036185
+036628,0,1,1,,one-output Loss,sample_036628
+036719,0,1,1,,two-output Tversky Loss small Dataset,sample_036719
+037649,0,1,1,,two-output L1 batch 100,sample_037649
+037718,0,1,1,,multi-output BCE/MSE Loss,sample_037718
+038443,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_038443
+038471,0,1,1,,multi-output Tversky Loss batch 20,sample_038471
+039918,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_039918
+040288,0,1,1,,multi-output Tversky Loss lr 3e-04,sample_040288
+040484,0,1,1,,multi-output Tversky Loss lr 3e-04,sample_040484
+041938,0,1,1,,two-output Tversky Loss small Dataset,sample_041938
+042230,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_042230
+042799,0,1,1,,two-output Tversky Loss small Dataset,sample_042799
+044105,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_044105
+047438,0,1,1,,two-output Tversky Loss,sample_047438
+047512,0,1,1,,one-output Tversky Loss,sample_047512
+048559,0,1,1,,one-output Tversky Loss,sample_048559
+048954,0,1,1,,multi-output Tversky Loss lr 5e-05,sample_048954
+049351,0,1,1,,one-output Tversky Loss,sample_049351
+049474,0,1,1,,two-output Tversky Loss,sample_049474
+050363,0,1,1,,multi-output Tversky Loss base-channel 32,sample_050363
+051171,0,1,1,,multi-output Tversky Loss lr 1e-04,sample_051171
+054505,0,1,1,,multi-output Tversky Loss lr 5e-05,sample_054505
+055945,0,1,1,,one-output Tversky Loss,sample_055945
+055953,0,1,1,,two-output Tversky Loss small Dataset,sample_055953
+057577,0,1,1,,one-output Tversky Loss,sample_057577
+058880,0,1,1,,one-output Loss,sample_058880
+058917,0,1,1,,multi-output Tversky Loss ReduceLROnPlateau,sample_058917
+059998,0,1,1,,two-output Reconstruction Loss,sample_059998
+060504,0,1,1,,multi-output Tversky Loss lr 1e-04,sample_060504
+061433,0,1,1,,two-output Tversky Loss small Dataset,sample_061433
+062268,0,1,1,,multi-output Tversky Loss lr 5e-05,sample_062268
+062402,0,1,1,,multi-output BCE/MSE Loss,sample_062402
+062500,0,1,1,,multi-output Tversky Loss batch 100,sample_062500
+062506,0,1,1,,multi-output Tversky Loss final Model,sample_062506
+063436,0,1,1,,two-output Tversky Loss small Dataset,sample_063436
+063514,0,1,1,,multi-output BCE/MSE Loss,sample_063514
+063897,0,1,1,,two-output L1 base-channel 32,sample_063897
+063929,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_063929
+064567,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_064567
+064667,0,1,1,,two-output Tversky Loss small Dataset,sample_064667
+064987,0,1,1,,multi-output BCE/MSE Loss,sample_064987
+065314,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_065314
+066954,0,1,1,,one-output Loss,sample_066954
+067038,0,1,1,,one-output Loss,sample_067038
+067614,0,1,1,,multi-output Tversky Loss lr 3e-04,sample_067614
+067665,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_067665
+068129,0,1,1,,multi-output BCE/MSE Loss,sample_068129
+068894,0,1,1,,two-output Tversky Loss small Dataset,sample_068894
+069133,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_069133
+069342,0,1,1,,one-output Tversky Loss,sample_069342
+069918,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_069918
+070503,0,1,1,,one-output Tversky Loss,sample_070503
+070999,0,1,1,,two-output Tversky Loss,sample_070999
+071426,0,1,1,,two-output L1 base-channel 32,sample_071426
+071544,0,1,1,,two-output Reconstruction Loss,sample_071544
+071678,0,1,1,,two-output L1,sample_071678
+071989,0,1,1,,multi-output Tversky Loss lr 5e-05,sample_071989
+071997,0,1,1,,two-output L1,sample_071997
+071999,0,1,1,,two-output Reconstruction Loss,sample_071999
+072010,0,1,1,,two-output Tversky Loss,sample_072010
+072025,0,1,1,,two-output L1 base-channel 32,sample_072025
+072031,0,1,1,,multi-output Tversky Loss base-channel 32,sample_072031
+072087,0,1,1,,multi-output Tversky Loss lr 3e-04,sample_072087
+072434,0,1,1,,multi-output Tversky Loss base-channel 32,sample_072434
+072738,0,1,1,,two-output L1 batch 100,sample_072738
+072865,0,1,1,,multi-output Tversky Loss batch 100,sample_072865
+073272,0,1,1,,multi-output Tversky Loss,sample_073272
+073338,0,1,1,,two-output Reconstruction Loss,sample_073338
+073354,0,1,1,,two-output L1 batch 100,sample_073354
+073424,0,1,1,,multi-output BCE/MSE Loss,sample_073424
+073451,0,1,1,,two-output L1,sample_073451
+073744,0,1,1,,multi-output Tversky Loss lr 3e-04,sample_073744
+074041,0,1,1,,multi-output Tversky Loss base-channel 32,sample_074041
+074062,0,1,1,,two-output Reconstruction Loss,sample_074062
+074185,0,1,1,,two-output L1 base-channel 32,sample_074185
+074260,0,1,1,,two-output Tversky Loss small Dataset,sample_074260
+074398,0,1,1,,two-output L1,sample_074398
+074494,0,1,1,,two-output L1 base-channel 32,sample_074494
+074753,0,1,1,,one-output Loss,sample_074753
+074934,0,1,1,,multi-output Tversky Loss base-channel 32,sample_074934
+074961,0,1,1,,two-output Reconstruction Loss,sample_074961
+075274,0,1,1,,multi-output Tversky Loss,sample_075274
+075533,0,1,1,,two-output Tversky Loss,sample_075533
+075562,0,1,1,,multi-output BCE/MSE Loss,sample_075562
+075619,0,1,1,,two-output L1,sample_075619
+075665,0,1,1,,multi-output BCE/MSE Loss,sample_075665
+075688,0,1,1,,one-output Loss,sample_075688
+075786,0,1,1,,two-output L1 base-channel 32,sample_075786
+075917,0,1,1,,multi-output Tversky Loss lr 5e-05,sample_075917
+076182,0,1,1,,one-output Tversky Loss,sample_076182
+076423,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_076423
+076445,0,1,1,,two-output Reconstruction Loss,sample_076445
+076699,0,1,1,,multi-output Tversky Loss,sample_076699
+077026,0,1,1,,multi-output Tversky Loss lr 5e-05,sample_077026
+077333,0,1,1,,two-output Tversky Loss small Dataset,sample_077333
+077485,0,1,1,,two-output Tversky Loss small Dataset,sample_077485
+077500,0,1,1,,multi-output BCE/MSE Loss,sample_077500
+077570,0,1,1,,multi-output Tversky Loss,sample_077570
+077616,0,1,1,,one-output Tversky Loss,sample_077616
+077749,0,1,1,,one-output Tversky Loss,sample_077749
+078009,0,1,1,,multi-output Tversky Loss,sample_078009
+078039,0,1,1,,two-output L1 base-channel 32,sample_078039
+078131,0,1,1,,multi-output Tversky Loss,sample_078131
+078164,0,1,1,,two-output Tversky Loss small Dataset,sample_078164
+078397,0,1,1,,multi-output Tversky Loss batch 100,sample_078397
+078481,0,1,1,,one-output Tversky Loss,sample_078481
+078672,0,1,1,,multi-output Tversky Loss,sample_078672
+078913,0,1,1,,two-output Tversky Loss small Dataset,sample_078913
+079037,0,1,1,,two-output L1 base-channel 32,sample_079037
+079405,0,1,1,,multi-output Tversky Loss final Model,sample_079405
+079437,0,1,1,,multi-output BCE/MSE Loss small Dataset,sample_079437
+079691,0,1,1,,multi-output Tversky Loss lr 1e-04,sample_079691
+079764,0,1,1,,two-output Tversky Loss,sample_079764
+079843,0,1,1,,one-output Tversky Loss,sample_079843
+079872,0,1,1,,one-output Loss,sample_079872

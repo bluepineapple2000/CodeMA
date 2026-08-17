@@ -1,0 +1,113 @@
+Al
+sample_005861
+sample_005680
+sample_006314
+sample_004730
+sample_004632
+
+Best
+sample_005832
+sample_004530
+sample_005849
+sample_005324
+sample_004711
+sample_004665
+sample_006466
+
+Worst
+sample_004964
+sample_005852
+sample_004457
+sample_004880
+
+
+Worst Samples: 
+
+sample_079887 Ti7Al
+sample_043225 Cu
+sample_072650 Ti7Al
+sample_003958 Al
+sample_057275 Iron
+sample_057772 iron deformed
+sample_003554 Al big grain
+
+Best Samples: 
+sample_048727 (Abgeschnitten) In178
+sample_047224 In718
+sample_049380 In718
+sample_044642 In718
+sample_019796 Al (Abgeschnitten)
+sample_023249 Al
+sample_026386 Al
+
+
+sample_026386
+sample_022778
+sample_049479
+sample_063684
+sample_054747
+sample_078242
+
+Al
+sample_022778
+IN718
+sample_049479
+Iron
+sample_063684
+
+Samples For Dataset explanation:
+
+Al_deformed_LoG
+sample_009451
+Al_small_grains
+sample_033824
+Al_small_grains
+sample_031564
+Al
+sample_022778
+Cu 
+sample_042391 	
+Ti7Al
+sample_079443 	
+
+
+
+Wichtige Modelle: 
+Die näher verglichen werden: 
+
+Worst:
+tow_output L1 base-channel 32
+
+two-output Reconstruction Loss
+
+two-output Tversky Loss (big dataset)
+
+one-output Tversky Loss (streichen?)
+one-output Loss (umbennen)
+
+multi-head BCE/MSE Loss
+multi-head Tversky Loss -> unterschiede zwischen den einzelnen Losses? 
+(vergleich bestes und schlechtestes model?)
+multi-head best model (evaluation)
+
+
+To-Do: 
+
+Drei wichtigste Samples raussuchen
+Jedes Modell auf die Samples Testen (und worst und best raussuchen?)
+Die Rausgesuchten Modelle in Text (und worst und best raussuchen?)
+
+out-output evaluation
+von Chatty Beschreiben lassen 
+
+Two-output: 
+
+Evaluation
+Hyperparameter Modelle streichen? (oder nur kurz erwähnen?)
+
+BCE/MSE evaluation
+Und Tverky Loss hyperparameter training zeigen. 
+
+Datensatz besprechen
+
+

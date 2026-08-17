@@ -1,0 +1,163 @@
+model_display,architecture,dataset,soft_dice_whole_mean,rmse_whole_mean
+multi-output BCE/MSE loss,pin,Al,0.8823144809321791,0.03502436462679246
+multi-output BCE/MSE loss,pin,Al_big_grains,0.8364986610747334,0.028605899466471567
+multi-output BCE/MSE loss,pin,Al_deformed_LoG,0.7397313805348757,0.02689538817422641
+multi-output BCE/MSE loss,pin,Al_small_grains,0.7301697190581025,0.02881601922537965
+multi-output BCE/MSE loss,pin,Cu,0.6818545597969129,0.022523736690485806
+multi-output BCE/MSE loss,pin,IN718_twins,0.8939046833079094,0.06672984266294454
+multi-output BCE/MSE loss,pin,Iron,0.7377544015145568,0.02452588435644696
+multi-output BCE/MSE loss,pin,Iron_deformed,0.7586636503680176,0.024452411690041295
+multi-output BCE/MSE loss,pin,Ti7Al,0.8294693658064152,0.024376307046522563
+multi-output BCE/MSE loss small dataset,unknown,Al,0.7863794367558877,0.06074309473886535
+multi-output BCE/MSE loss small dataset,unknown,Al_big_grains,0.6289488090256202,0.06775307597970395
+multi-output BCE/MSE loss small dataset,unknown,Al_deformed_LoG,0.6105393132505318,0.027532599758867696
+multi-output BCE/MSE loss small dataset,unknown,Al_small_grains,0.6279190763075283,0.028733175495922844
+multi-output BCE/MSE loss small dataset,unknown,Cu,0.5008168541638739,0.022109824589954315
+multi-output BCE/MSE loss small dataset,unknown,IN718_twins,0.7762303248077453,0.12832094920025192
+multi-output BCE/MSE loss small dataset,unknown,Iron,0.5609395127298672,0.03350688083576896
+multi-output BCE/MSE loss small dataset,unknown,Iron_deformed,0.5791278430921171,0.03097662210792191
+multi-output BCE/MSE loss small dataset,unknown,Ti7Al,0.5958248790225078,0.055714094141048554
+multi-output Tversky loss ReduceLROnPlateau 0.5,unknown,Al,0.9896786375195569,0.009362895281848827
+multi-output Tversky loss ReduceLROnPlateau 0.5,unknown,Al_big_grains,0.9640953916570415,0.01148972501919222
+multi-output Tversky loss ReduceLROnPlateau 0.5,unknown,Al_deformed_LoG,0.989059093925688,0.004352270945673758
+multi-output Tversky loss ReduceLROnPlateau 0.5,unknown,Al_small_grains,0.9846839239631874,0.00487442413029472
+multi-output Tversky loss ReduceLROnPlateau 0.5,unknown,Cu,0.971141860906798,0.004718507117112224
+multi-output Tversky loss ReduceLROnPlateau 0.5,unknown,IN718_twins,0.9941634496685051,0.015381705464895163
+multi-output Tversky loss ReduceLROnPlateau 0.5,unknown,Iron,0.9702552768276699,0.006285265812636373
+multi-output Tversky loss ReduceLROnPlateau 0.5,unknown,Iron_deformed,0.9747580786902772,0.006460478632791083
+multi-output Tversky loss ReduceLROnPlateau 0.5,unknown,Ti7Al,0.946683602754412,0.013100257740307805
+multi-output Tversky loss ReduceLROnPlateau 0.5 evaluation,unknown,Al,0.988678713755818,0.009508485270257062
+multi-output Tversky loss ReduceLROnPlateau 0.5 evaluation,unknown,Al_big_grains,0.9353308145038941,0.015630512593891734
+multi-output Tversky loss ReduceLROnPlateau 0.5 evaluation,unknown,Al_deformed_LoG,0.9877681739149038,0.004902122771688716
+multi-output Tversky loss ReduceLROnPlateau 0.5 evaluation,unknown,Al_small_grains,0.9841776587317164,0.005049756758709654
+multi-output Tversky loss ReduceLROnPlateau 0.5 evaluation,unknown,Cu,0.9586904855674715,0.005442736642449813
+multi-output Tversky loss ReduceLROnPlateau 0.5 evaluation,unknown,IN718_twins,0.9898518268371036,0.017495536798247426
+multi-output Tversky loss ReduceLROnPlateau 0.5 evaluation,unknown,Iron,0.9455085925147622,0.007565377929988062
+multi-output Tversky loss ReduceLROnPlateau 0.5 evaluation,unknown,Iron_deformed,0.9433726358665849,0.008932846630391096
+multi-output Tversky loss ReduceLROnPlateau 0.5 evaluation,unknown,Ti7Al,0.8895878830772064,0.020282371517989155
+multi-output Tversky loss base channel 32,unknown,Al,0.9846572632044814,0.011337903893047188
+multi-output Tversky loss base channel 32,unknown,Al_big_grains,0.9546296719623648,0.014003534222602039
+multi-output Tversky loss base channel 32,unknown,Al_deformed_LoG,0.9880121939091219,0.004688530413962581
+multi-output Tversky loss base channel 32,unknown,Al_small_grains,0.9844057848272116,0.005008731171298061
+multi-output Tversky loss base channel 32,unknown,Cu,0.9656538947659908,0.005162618772147888
+multi-output Tversky loss base channel 32,unknown,IN718_twins,0.9809475187989873,0.024272651621742244
+multi-output Tversky loss base channel 32,unknown,Iron,0.9649053675803676,0.006791588784292734
+multi-output Tversky loss base channel 32,unknown,Iron_deformed,0.9712920500303299,0.006986634043978288
+multi-output Tversky loss base channel 32,unknown,Ti7Al,0.9242805993248676,0.016552129354335896
+multi-output Tversky loss batch 100,unknown,Al,0.9901313247064853,0.009411572625398924
+multi-output Tversky loss batch 100,unknown,Al_big_grains,0.9602105046312014,0.012879627981380024
+multi-output Tversky loss batch 100,unknown,Al_deformed_LoG,0.9882331403593222,0.004380222297186213
+multi-output Tversky loss batch 100,unknown,Al_small_grains,0.9837791613046674,0.004753643805641914
+multi-output Tversky loss batch 100,unknown,Cu,0.9652996261566616,0.005034800706555179
+multi-output Tversky loss batch 100,unknown,IN718_twins,0.9903333411065058,0.019990702963269328
+multi-output Tversky loss batch 100,unknown,Iron,0.960962661111088,0.0068567232352614955
+multi-output Tversky loss batch 100,unknown,Iron_deformed,0.9747447081485385,0.006609986956303146
+multi-output Tversky loss batch 100,unknown,Ti7Al,0.9225354593889467,0.016479207857527947
+multi-output Tversky loss batch 20,unknown,Al,0.9848334427279327,0.011946986338373934
+multi-output Tversky loss batch 20,unknown,Al_big_grains,0.9597277016095493,0.01303925722891433
+multi-output Tversky loss batch 20,unknown,Al_deformed_LoG,0.9883958151977923,0.00440887736759674
+multi-output Tversky loss batch 20,unknown,Al_small_grains,0.9866989606964416,0.004636662088898029
+multi-output Tversky loss batch 20,unknown,Cu,0.9686580044584391,0.004749436018093001
+multi-output Tversky loss batch 20,unknown,IN718_twins,0.9888267652177906,0.02133825345420335
+multi-output Tversky loss batch 20,unknown,Iron,0.9674748076654193,0.006476124371323724
+multi-output Tversky loss batch 20,unknown,Iron_deformed,0.9750795051375241,0.006490700008954527
+multi-output Tversky loss batch 20,unknown,Ti7Al,0.9387942621934002,0.014738031459675154
+multi-output Tversky loss learning rate 1e-4,unknown,Al,0.9875448567705004,0.012013434383686563
+multi-output Tversky loss learning rate 1e-4,unknown,Al_big_grains,0.9617622430989707,0.014068375296040348
+multi-output Tversky loss learning rate 1e-4,unknown,Al_deformed_LoG,0.9888806300651696,0.00481476282422788
+multi-output Tversky loss learning rate 1e-4,unknown,Al_small_grains,0.9862353274787682,0.005201321979520619
+multi-output Tversky loss learning rate 1e-4,unknown,Cu,0.971318542748533,0.004782842149657852
+multi-output Tversky loss learning rate 1e-4,unknown,IN718_twins,0.9846194785229018,0.024776785347469944
+multi-output Tversky loss learning rate 1e-4,unknown,Iron,0.9680113948103207,0.006836986997592171
+multi-output Tversky loss learning rate 1e-4,unknown,Iron_deformed,0.9714634298636199,0.0068480676373205525
+multi-output Tversky loss learning rate 1e-4,unknown,Ti7Al,0.9368498596137967,0.015233224563316617
+multi-output Tversky loss learning rate 3e-4,unknown,Al,0.983637596196113,0.01491575400437667
+multi-output Tversky loss learning rate 3e-4,unknown,Al_big_grains,0.9561286643147469,0.01612119167913219
+multi-output Tversky loss learning rate 3e-4,unknown,Al_deformed_LoG,0.9885914317435689,0.005390458486039633
+multi-output Tversky loss learning rate 3e-4,unknown,Al_small_grains,0.9816675338948119,0.006296275496108245
+multi-output Tversky loss learning rate 3e-4,unknown,Cu,0.9708119640730308,0.005290648793954932
+multi-output Tversky loss learning rate 3e-4,unknown,IN718_twins,0.9809762890604334,0.029518828611583895
+multi-output Tversky loss learning rate 3e-4,unknown,Iron,0.9634116897498494,0.007960056980338538
+multi-output Tversky loss learning rate 3e-4,unknown,Iron_deformed,0.9701378826500056,0.007629773758445389
+multi-output Tversky loss learning rate 3e-4,unknown,Ti7Al,0.9359576443659848,0.01572689839301562
+multi-output Tversky loss learning rate 5e-5,unknown,Al,0.9878283402578577,0.00968485519844208
+multi-output Tversky loss learning rate 5e-5,unknown,Al_big_grains,0.9520834892772246,0.013479067972461319
+multi-output Tversky loss learning rate 5e-5,unknown,Al_deformed_LoG,0.9864937168959942,0.004587465286830443
+multi-output Tversky loss learning rate 5e-5,unknown,Al_small_grains,0.9847525114166564,0.004747574440957726
+multi-output Tversky loss learning rate 5e-5,unknown,Cu,0.9648292472817643,0.004942427946323063
+multi-output Tversky loss learning rate 5e-5,unknown,IN718_twins,0.9855345139209604,0.019353710523219526
+multi-output Tversky loss learning rate 5e-5,unknown,Iron,0.9638096520037793,0.006704102005112742
+multi-output Tversky loss learning rate 5e-5,unknown,Iron_deformed,0.9706542794216471,0.006746923370383752
+multi-output Tversky loss learning rate 5e-5,unknown,Ti7Al,0.92380119685469,0.01528236435963125
+one-output Dice/L1 loss,oneoutput,Al,0.8499188277525843,0.0429155508732426
+one-output Dice/L1 loss,oneoutput,Al_big_grains,0.7548541364030562,0.04166444887211407
+one-output Dice/L1 loss,oneoutput,Al_deformed_LoG,0.8233937662508752,0.02174577821925691
+one-output Dice/L1 loss,oneoutput,Al_small_grains,0.8307495404412781,0.020166754592682416
+one-output Dice/L1 loss,oneoutput,Cu,0.7816407015048059,0.016103774544027716
+one-output Dice/L1 loss,oneoutput,IN718_twins,0.8700924252065465,0.07942601799720497
+one-output Dice/L1 loss,oneoutput,Iron,0.7583556775170476,0.02420301828533406
+one-output Dice/L1 loss,oneoutput,Iron_deformed,0.8120773208847594,0.021671280386076797
+one-output Dice/L1 loss,oneoutput,Ti7Al,0.7230911676739824,0.0398243753576715
+one-output Tversky loss,oneoutput,Al,0.7546693849626012,0.052088385238596574
+one-output Tversky loss,oneoutput,Al_big_grains,0.6188944828953,0.04072599705735527
+one-output Tversky loss,oneoutput,Al_deformed_LoG,0.6243223389093246,0.025534065549032224
+one-output Tversky loss,oneoutput,Al_small_grains,0.7013102793067262,0.023346781961004412
+one-output Tversky loss,oneoutput,Cu,0.5974173641350975,0.01780002153679991
+one-output Tversky loss,oneoutput,IN718_twins,0.7940249297301291,0.1039740681855626
+one-output Tversky loss,oneoutput,Iron,0.5658464591338563,0.02395765273277938
+one-output Tversky loss,oneoutput,Iron_deformed,0.5586768140484657,0.02737861696615663
+one-output Tversky loss,oneoutput,Ti7Al,0.48470694283986915,0.04252273663678867
+two-output L1 loss,twooutput,Al,0.9900186591331456,0.007235683587316314
+two-output L1 loss,twooutput,Al_big_grains,0.8982805398063384,0.017801550338449636
+two-output L1 loss,twooutput,Al_deformed_LoG,0.9810523640157448,0.004966129422326809
+two-output L1 loss,twooutput,Al_small_grains,0.9790147318896176,0.005067165114071535
+two-output L1 loss,twooutput,Cu,0.9133418914837511,0.0075409248234351335
+two-output L1 loss,twooutput,IN718_twins,0.9942417372292126,0.012434450082784512
+two-output L1 loss,twooutput,Iron,0.8937184584896956,0.010634812094191206
+two-output L1 loss,twooutput,Iron_deformed,0.9218288578186685,0.01020770492916253
+two-output L1 loss,twooutput,Ti7Al,0.8289239254491082,0.0222372293990137
+two-output L1 loss base channel 32,twooutput,Al,0.9807927381721883,0.010695557188840752
+two-output L1 loss base channel 32,twooutput,Al_big_grains,0.8530298728576821,0.02460349026449067
+two-output L1 loss base channel 32,twooutput,Al_deformed_LoG,0.9653997715666063,0.006884520827144167
+two-output L1 loss base channel 32,twooutput,Al_small_grains,0.9641228834895984,0.006819151302266384
+two-output L1 loss base channel 32,twooutput,Cu,0.8526968662145885,0.01007642209507037
+two-output L1 loss base channel 32,twooutput,IN718_twins,0.9886801829394953,0.018114538273587034
+two-output L1 loss base channel 32,twooutput,Iron,0.8551382332929035,0.013236785337281948
+two-output L1 loss base channel 32,twooutput,Iron_deformed,0.8985258337090216,0.01240169014459842
+two-output L1 loss base channel 32,twooutput,Ti7Al,0.759448565080248,0.028626477254297664
+two-output L1 loss batch 100,twooutput,Al,0.99136503641518,0.0066820344146922474
+two-output L1 loss batch 100,twooutput,Al_big_grains,0.9199795014076475,0.014622088456762555
+two-output L1 loss batch 100,twooutput,Al_deformed_LoG,0.9822090053930879,0.004959328296333953
+two-output L1 loss batch 100,twooutput,Al_small_grains,0.9788981946050257,0.005132420324208756
+two-output L1 loss batch 100,twooutput,Cu,0.9198329626156863,0.007413354481492083
+two-output L1 loss batch 100,twooutput,IN718_twins,0.9965587367357364,0.009405800707964086
+two-output L1 loss batch 100,twooutput,Iron,0.9062425241207899,0.009594205680473507
+two-output L1 loss batch 100,twooutput,Iron_deformed,0.9314464636722202,0.009491717045082906
+two-output L1 loss batch 100,twooutput,Ti7Al,0.8561654765544267,0.018626017316248508
+two-output Tversky loss,twooutput,Al,0.605043248564369,0.1968510614977873
+two-output Tversky loss,twooutput,Al_big_grains,0.4602267201989889,0.23522741041159712
+two-output Tversky loss,twooutput,Al_deformed_LoG,0.5758690123653246,0.08209765996111346
+two-output Tversky loss,twooutput,Al_small_grains,0.599190126510634,0.07886398588374684
+two-output Tversky loss,twooutput,Cu,0.5499028902233377,0.05964404881496349
+two-output Tversky loss,twooutput,IN718_twins,0.6722178680759301,0.30453279922544124
+two-output Tversky loss,twooutput,Iron,0.4658496109629745,0.11755536983151041
+two-output Tversky loss,twooutput,Iron_deformed,0.5195024665746055,0.0935535578983476
+two-output Tversky loss,twooutput,Ti7Al,0.3722548810058626,0.23517850632297577
+two-output Tversky loss small dataset,twooutput,Al,0.5880985499780632,0.20829309160328657
+two-output Tversky loss small dataset,twooutput,Al_big_grains,0.4280267883146155,0.23984189978733222
+two-output Tversky loss small dataset,twooutput,Al_deformed_LoG,0.5524354773935758,0.08027855178806925
+two-output Tversky loss small dataset,twooutput,Al_small_grains,0.5646920742440051,0.07741169394938731
+two-output Tversky loss small dataset,twooutput,Cu,0.4485455129536981,0.051153455187294146
+two-output Tversky loss small dataset,twooutput,IN718_twins,0.6485823010711025,0.32311888898224767
+two-output Tversky loss small dataset,twooutput,Iron,0.41876906893257776,0.11872143126718362
+two-output Tversky loss small dataset,twooutput,Iron_deformed,0.46802681940649526,0.0944647970383642
+two-output Tversky loss small dataset,twooutput,Ti7Al,0.3317695293832441,0.22048068024731912
+two-output reconstruction loss,twooutput,Al,0.9916006500392268,0.007333380312180946
+two-output reconstruction loss,twooutput,Al_big_grains,0.9193763462961584,0.016370220407396437
+two-output reconstruction loss,twooutput,Al_deformed_LoG,0.9876440735533834,0.004032084934199955
+two-output reconstruction loss,twooutput,Al_small_grains,0.9844537042621253,0.004551926799320087
+two-output reconstruction loss,twooutput,Cu,0.9353896854429028,0.006266449443953495
+two-output reconstruction loss,twooutput,IN718_twins,0.9918731961762218,0.014217876844019182
+two-output reconstruction loss,twooutput,Iron,0.9328408649385865,0.008373663264218973
+two-output reconstruction loss,twooutput,Iron_deformed,0.9461040317584197,0.008607043375246867
+two-output reconstruction loss,twooutput,Ti7Al,0.8785004886573758,0.019322322639596504

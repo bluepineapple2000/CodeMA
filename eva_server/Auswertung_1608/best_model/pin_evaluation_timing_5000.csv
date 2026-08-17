@@ -1,0 +1,2 @@
+model,model_path,n_batches,n_samples,n_spots,total_eval_seconds,inference_seconds,metric_seconds,overhead_seconds,seconds_per_sample,seconds_per_spot,samples_per_second,spots_per_second
+final_20260804-224906_augmented_spots_train_e200_b20_lr0.0002_s1,checkpoints/final_20260804-224906_augmented_spots_train_e200_b20_lr0.0002_s1.pth,625,20000,40000,182.17754439404234,3.114421974401921,1.7048592909704894,177.35826312866993,0.009108877219702117,0.004554438609851059,109.78301451215548,219.56602902431095
